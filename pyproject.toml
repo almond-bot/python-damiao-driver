@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "damiao-motor"
+version = "0.1.0"
+description = "Python driver for DaMiao motors over CAN (MIT-style control, multi-motor support)."
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+  {name = "jia", email = "jiaxiejason@gmail.com"},
+]
+keywords = ["damiao", "motor", "can", "robotics"]
+dependencies = [
+    "python-can>=4.3,<5.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/your-user/damiao-motor"
+Repository = "https://github.com/your-user/damiao-motor"
+
+[tool.setuptools]
+packages = ["damiao_motor"]
+
+
