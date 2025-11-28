@@ -25,6 +25,9 @@ Repository = "https://github.com/jia-xie/python-damiao-driver"
 [tool.setuptools]
 packages = ["damiao_motor"]
 
+[tool.setuptools.package-data]
+damiao_motor = ["templates/*.html"]
+
 [project.scripts]
 damiao-scan = "damiao_motor.cli:main"
 damiao-gui = "damiao_motor.web_gui:main"
