@@ -1,7 +1,6 @@
 ## damiao-motor
 
 ![Python Version](https://img.shields.io/badge/python-3.8%2B-blue)
-![Version](https://img.shields.io/badge/version-1.0.0-orange)
 ![Platform](https://img.shields.io/badge/platform-Linux-lightgrey)
 [![Maintainer](https://img.shields.io/badge/maintainer-jia--xie-blue)](https://github.com/jia-xie)
 [![PyPI](https://img.shields.io/badge/pypi-damiao--motor-blue)](https://pypi.org/project/damiao-motor/)
