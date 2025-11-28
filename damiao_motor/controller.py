@@ -1,5 +1,6 @@
+import threading
 import time
-from typing import Dict, Iterable, Optional, Callable
+from typing import Dict, Iterable, Optional
 
 import can
 
@@ -12,11 +13,11 @@ class DaMiaoController:
 
     - Owns a single CAN bus.
     - Manages multiple DaMiaoMotor instances on that bus.
+    - Automatically polls feedback in background when motors are present.
     - Provides helper methods to:
         * enable/disable all motors
         * send commands to one or all motors
         * poll feedback non-blockingly
-        * run a basic control loop callback at fixed frequency
     """
 
     def __init__(self, channel: str = "can0", bustype: str = "socketcan") -> None:
@@ -25,6 +26,10 @@ class DaMiaoController:
         self.motors: Dict[int, DaMiaoMotor] = {}
         # Keyed by logical motor ID (embedded in feedback frame)
         self._motors_by_feedback: Dict[int, DaMiaoMotor] = {}
+        # Background polling thread
+        self._polling_thread: Optional[threading.Thread] = None
+        self._polling_active = False
+        self._polling_lock = threading.Lock()
 
     # -----------------------
     # Motor management
@@ -33,10 +38,18 @@ class DaMiaoController:
         if motor_id in self.motors:
             raise ValueError(f"Motor with ID {motor_id} already exists")
 
-        motor = DaMiaoMotor(motor_id=motor_id, feedback_id=feedback_id, bus=self.bus)
+        motor = DaMiaoMotor(
+            motor_id=motor_id,
+            feedback_id=feedback_id,
+            bus=self.bus,
+        )
         self.motors[motor_id] = motor
         # Bind by logical motor ID; feedback frames embed this ID in the first byte.
         self._motors_by_feedback[motor_id] = motor
+        
+        # Start background polling if not already running
+        self._start_polling()
+        
         return motor
 
     def get_motor(self, motor_id: int) -> DaMiaoMotor:
@@ -62,24 +75,54 @@ class DaMiaoController:
     def send_cmd(
         self,
         motor_id: int,
-        pos: float,
-        vel: float,
-        torq: float,
-        kp: float = 0.0,
-        kd: float = 0.0,
+        target_position: float = 0.0,
+        target_velocity: float = 0.0,
+        stiffness: float = 0.0,
+        damping: float = 0.0,
+        feedforward_torque: float = 0.0,
     ) -> None:
-        self.get_motor(motor_id).send_cmd(pos=pos, vel=vel, torq=torq, kp=kp, kd=kd)
+        self.get_motor(motor_id).send_cmd(
+            target_position=target_position,
+            target_velocity=target_velocity,
+            stiffness=stiffness,
+            damping=damping,
+            feedforward_torque=feedforward_torque,
+        )
 
     def send_cmd_all(
         self,
-        pos: float,
-        vel: float,
-        torq: float,
-        kp: float = 0.0,
-        kd: float = 0.0,
+        target_position: float = 0.0,
+        target_velocity: float = 0.0,
+        stiffness: float = 0.0,
+        damping: float = 0.0,
+        feedforward_torque: float = 0.0,
     ) -> None:
         for m in self.all_motors():
-            m.send_cmd(pos=pos, vel=vel, torq=torq, kp=kp, kd=kd)
+            m.send_cmd(
+                target_position=target_position,
+                target_velocity=target_velocity,
+                stiffness=stiffness,
+                damping=damping,
+                feedforward_torque=feedforward_torque,
+            )
+
+    # -----------------------
+    # Bus management
+    # -----------------------
+    def flush_bus(self) -> int:
+        """
+        Flush all pending messages from the CAN bus buffer.
+        
+        Returns:
+            Number of messages flushed.
+        """
+        count = 0
+        while True:
+            msg = self.bus.recv(timeout=0)
+            if msg is None:
+                break
+            count += 1
+        return count
 
     # -----------------------
     # Feedback polling
@@ -89,78 +132,75 @@ class DaMiaoController:
         Non-blocking read of all pending CAN frames on this bus, and dispatch
         feedback frames to the corresponding motors.
         """
-        while True:
-            msg = self.bus.recv(timeout=0)
-            if msg is None:
-                break
-
-            if len(msg.data) != 8:
-                continue
-
-            # Feedback messages include the logical motor ID in the low 4 bits
-            # of the first data byte. Use that to route feedback to the right motor.
-            logical_id = msg.data[0] & 0x0F
-            motor = self._motors_by_feedback.get(logical_id)
-            if motor is None:
-                continue
-
-            motor.decode_sensor_feedback(bytes(msg.data))
-
-    # -----------------------
-    # Simple control loop
-    # -----------------------
-    def run_loop(
-        self,
-        freq_hz: float,
-        step_fn: Callable[["DaMiaoController", float], None],
-        print_feedback: bool = False,
-    ) -> None:
-        """
-        Run a simple timing-based loop.
-
-        step_fn(controller, t) is called at freq_hz for user logic.
-        This allows you to compute and send commands inside step_fn.
-        Feedback is polled continuously in between steps.
-        """
-        period = 1.0 / freq_hz
-        next_send_time = time.perf_counter()
-
         try:
             while True:
-                now = time.perf_counter()
+                msg = self.bus.recv(timeout=0)
+                if msg is None:
+                    break
 
-                # Non-blocking feedback
+                if len(msg.data) != 8:
+                    continue
+
+                # Feedback messages include the logical motor ID in the low 4 bits
+                # of the first data byte. Use that to route feedback to the right motor.
+                logical_id = msg.data[0] & 0x0F
+                motor = self._motors_by_feedback.get(logical_id)
+                if motor is None:
+                    continue
+
+                motor.decode_sensor_feedback(bytes(msg.data), arbitration_id=msg.arbitration_id)
+        except (ValueError, OSError, AttributeError):
+            # Bus is closed or invalid, stop polling
+            with self._polling_lock:
+                self._polling_active = False
+
+    # -----------------------
+    # Background polling
+    # -----------------------
+    def _start_polling(self) -> None:
+        """Start background polling thread if not already running."""
+        with self._polling_lock:
+            if self._polling_active:
+                return
+            
+            if len(self.motors) == 0:
+                return
+            
+            self._polling_active = True
+            self._polling_thread = threading.Thread(target=self._polling_loop, daemon=True)
+            self._polling_thread.start()
+
+    def _stop_polling(self) -> None:
+        """Stop background polling thread."""
+        with self._polling_lock:
+            self._polling_active = False
+            if self._polling_thread is not None:
+                self._polling_thread.join(timeout=0.1)
+                self._polling_thread = None
+
+    def _polling_loop(self) -> None:
+        """Background thread that continuously polls feedback."""
+        while self._polling_active:
+            if len(self.motors) == 0:
+                # No motors, stop polling
+                with self._polling_lock:
+                    self._polling_active = False
+                break
+            
+            try:
                 self.poll_feedback()
+            except Exception:
+                # Bus error or other exception, stop polling
+                with self._polling_lock:
+                    self._polling_active = False
+                break
+            
+            time.sleep(0.001)  # Small delay to prevent CPU spinning
 
-                # Call user step at fixed frequency
-                if now >= next_send_time:
-                    t = now
-                    step_fn(self, t)
-                    next_send_time += period
-                    if now > next_send_time:
-                        next_send_time = now + period
-
-                # Optionally print latest feedback (just once per loop iteration)
-                if print_feedback:
-                    for m in self.all_motors():
-                        if m.state:
-                            state_code = m.state.get("state")
-                            state_name = m.state.get("state_name")
-                            pos = m.state.get("pos")
-                            vel = m.state.get("vel")
-                            torq = m.state.get("torq")
-                            t_mos = m.state.get("t_mos")
-                            t_rotor = m.state.get("t_rotor")
-                            print(
-                                f"ID 0x{m.motor_id:02X}: "
-                                f"state={state_name} ({state_code}), "
-                                f"pos={pos:.3f}, vel={vel:.3f}, torq={torq:.3f}, "
-                                f"t_mos={t_mos:.1f}C, t_rotor={t_rotor:.1f}C"
-                            )
-
-                time.sleep(0.0001)
-        except KeyboardInterrupt:
-            self.disable_all()
-            self.bus.shutdown()
+    def shutdown(self) -> None:
+        """Shutdown the controller and stop background polling."""
+        self._stop_polling()
+        self.disable_all()
+        self.bus.shutdown()
 
 
