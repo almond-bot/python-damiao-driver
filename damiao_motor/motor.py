@@ -148,10 +148,7 @@ def uint_to_float(x_int: int, x_min: float, x_max: float, bits: int) -> float:
 
 class DaMiaoMotor:
     """
-    Lightweight DaMiao motor wrapper for MIT-style control over a CAN bus.
-
-    This is essentially the same encoding/decoding logic as in minimal_single_motor.py,
-    but packaged as a reusable class.
+    Lightweight DaMiao motor wrapper over a CAN bus.
     """
 
     def __init__(self, motor_id: int, feedback_id: int, bus: can.Bus) -> None:
@@ -184,6 +181,10 @@ class DaMiaoMotor:
     # Encode messages
     # -----------------------
     def encode_cmd_msg(self, pos: float, vel: float, torq: float, kp: float, kd: float) -> bytes:
+        """
+        Encode a command to CAN frame for sending to the motor.
+        Check 
+        """
         pos_u = float_to_uint(pos, P_MIN, P_MAX, 16)
         vel_u = float_to_uint(vel, V_MIN, V_MAX, 12)
         kp_u = float_to_uint(kp, KP_MIN, KP_MAX, 12)

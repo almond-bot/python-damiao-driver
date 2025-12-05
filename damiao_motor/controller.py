@@ -179,7 +179,10 @@ class DaMiaoController:
                 self._polling_thread = None
 
     def _polling_loop(self) -> None:
-        """Background thread that continuously polls feedback."""
+        """
+        Background thread that continuously polls feedback.
+        
+        """
         while self._polling_active:
             if len(self.motors) == 0:
                 # No motors, stop polling

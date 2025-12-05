@@ -23,7 +23,6 @@ theme:
         icon: material/brightness-4
         name: Switch to light mode
   features:
-    - navigation.tabs
     - navigation.sections
     - navigation.expand
     - navigation.top
@@ -66,16 +65,13 @@ plugins:
 
 nav:
   - Home: index.md
-  - Getting Started:
-    - Installation: getting-started/installation.md
-    - Quick Start: getting-started/quick-start.md
+  - Guide:
+    - Hardware Setup: guide/hardware-setup.md
+    - Motor Communication: guide/motor-communication.md
   - API Reference:
     - DaMiaoController: api/controller.md
     - DaMiaoMotor: api/motor.md
     - Registers: api/registers.md
-  - Configuration:
-    - CAN Setup: configuration/can-setup.md
-    - Motor Configuration: configuration/motor-config.md
 
-copyright: Copyright &copy; 2024 jia-xie
+copyright: Copyright &copy; 2025-Present jia-xie
 
