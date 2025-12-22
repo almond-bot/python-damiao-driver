@@ -148,7 +148,7 @@ class DaMiaoController:
                 if motor is None:
                     continue
 
-                motor.decode_sensor_feedback(bytes(msg.data), arbitration_id=msg.arbitration_id)
+                motor.process_feedback_frame(bytes(msg.data), arbitration_id=msg.arbitration_id)
         except (ValueError, OSError, AttributeError):
             # Bus is closed or invalid, stop polling
             with self._polling_lock:
@@ -200,6 +200,34 @@ class DaMiaoController:
             
             time.sleep(0.001)  # Small delay to prevent CPU spinning
 
+    def _handle_register_reply(self, data: bytes) -> None:
+        """
+        Handle a register reply frame.
+        Delegates to the motor instance to handle the reply.
+        
+        Args:
+            data: 8-byte CAN frame data
+        """
+        if len(data) < 8:
+            return
+        
+        # Register reply format: D[0]=CANID_L, D[1]=CANID_H, D[2]=0x33, D[3]=RID, D[4-7]=data
+        canid_l = data[0]
+        canid_h = data[1]
+        rid = data[3]
+        register_data = data[4:8]  # 4-byte register value
+        
+        # Reconstruct motor_id from CANID_L and CANID_H
+        motor_id = canid_l | (canid_h << 8)
+        
+        # Get the motor instance
+        motor = self.motors.get(motor_id)
+        if motor is None:
+            return
+        
+        # Let the motor handle the register reply
+        motor.handle_register_reply(rid, register_data)
+    
     def shutdown(self) -> None:
         """Shutdown the controller and stop background polling."""
         self._stop_polling()

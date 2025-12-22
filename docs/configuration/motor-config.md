@@ -56,7 +56,7 @@ The CAN interface bitrate should match the motor's configured baud rate.
 ### Reading Registers
 
 ```python
-value = motor.read_register(register_id)
+value = motor.get_register(register_id)
 ```
 
 ### Writing Registers

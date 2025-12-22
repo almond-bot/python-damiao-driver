@@ -3,6 +3,7 @@ import struct
 import time
 from typing import Dict, Any, Optional, Literal
 from dataclasses import dataclass
+import threading
 
 # -----------------------
 # Register table
@@ -106,6 +107,42 @@ CAN_BAUD_RATE_CODES = {
 }
 
 # -----------------------
+# Helper functions
+# -----------------------
+def is_register_reply(data: bytes) -> bool:
+    """
+    Check if a CAN frame is a register reply frame.
+    
+    Conditions:
+    - D[1] is 0x00-0x0F (0-15)
+    - D[2] is 0x33
+    - D[3] is a valid register number (0-81)
+    
+    Args:
+        data: 8-byte CAN frame data
+        
+    Returns:
+        True if this appears to be a register reply frame
+    """
+    if len(data) < 4:
+        return False
+    
+    # D[1] should be 0x00-0x0F
+    if data[1] > 0x0F:
+        return False
+    
+    # D[2] should be 0x33
+    if data[2] != 0x33:
+        return False
+    
+    # D[3] should be a valid register number (0-81)
+    rid = data[3]
+    if rid not in REGISTER_TABLE:
+        return False
+    
+    return True
+
+# -----------------------
 # Motor parameter limits
 # -----------------------
 P_MIN, P_MAX = -12.5, 12.5
@@ -168,6 +205,15 @@ class DaMiaoMotor:
 
         # last decoded feedback
         self.state: Dict[str, Any] = {}
+        self.state_lock = threading.Lock()
+
+        # last register values
+        self.registers: Dict[int, float | int] = {}
+        self.registers_lock = threading.Lock()
+        self.register_request_time: Dict[int, float] = {}
+        self.register_request_time_lock = threading.Lock()
+        self.register_reply_time: Dict[int, float] = {}
+        self.register_reply_time_lock = threading.Lock()
 
     def get_states(self) -> Dict[str, Any]:
         """
@@ -394,6 +440,27 @@ class DaMiaoMotor:
     # -----------------------
     # Decode feedback
     # -----------------------
+    def process_feedback_frame(self, data: bytes, arbitration_id: int | None = None) -> None:
+        if is_register_reply(data):
+            self.decode_register_reply(data, arbitration_id=arbitration_id)
+        
+        else:
+            self.decode_sensor_feedback(data, arbitration_id=arbitration_id)
+    
+    def decode_register_reply(self, data: bytes, arbitration_id: int | None = None) -> None:
+        with self.register_reply_time_lock:
+            # record the time of the register reply
+            self.register_reply_time[data[3]] = time.perf_counter()
+        with self.registers_lock:
+            # unpack with corresponding data type
+            if REGISTER_TABLE[data[3]].data_type == "float":
+                self.registers[data[3]] = struct.unpack("<f", data[4:8])[0]
+            elif REGISTER_TABLE[data[3]].data_type == "uint32":
+                self.registers[data[3]] = struct.unpack("<I", data[4:8])[0]
+            else:
+                raise ValueError(f"Unknown data_type: {REGISTER_TABLE[data[3]].data_type} for register {data[3]}")
+            return
+
     def decode_sensor_feedback(self, data: bytes, arbitration_id: int | None = None) -> Dict[str, float]:
         if len(data) != 8:
             raise ValueError("Feedback frame must have length 8")
@@ -449,7 +516,15 @@ class DaMiaoMotor:
         
         self.send_raw(msg_data, arbitration_id=0x7FF)
 
-    def read_register(self, rid: int, timeout: float = 1.0) -> float | int:
+    def request_register_reading(self, rid: int) -> None:
+        """
+        Request a register reading from the motor.
+        """
+        with self.register_request_time_lock:
+            self.register_request_time[rid] = time.perf_counter()
+        self._send_register_cmd(0x33, rid)
+
+    def get_register(self, rid: int, timeout: float = 1.0) -> float | int:
         """
         Read a register value from the motor.
         
@@ -464,44 +539,11 @@ class DaMiaoMotor:
             KeyError: If register ID is not in the register table
             ValueError: If register is write-only (should not happen for RO registers)
         """
-        # Check if register exists in table
-        if rid not in REGISTER_TABLE:
-            raise KeyError(f"Register {rid} not found in register table")
-        
-        reg_info = REGISTER_TABLE[rid]
-        
-        # Check if register is readable
-        if reg_info.access == "RO" or reg_info.access == "RW":
-            pass  # Both RO and RW are readable
-        else:
-            raise ValueError(f"Register {rid} ({reg_info.variable}) is not readable")
-        
-        # Send read command
-        self._send_register_cmd(0x33, rid)
-        
-        # Wait for response
-        start_time = time.perf_counter()
-        while time.perf_counter() - start_time < timeout:
-            msg = self.bus.recv(timeout=0.1)
-            if msg is None:
-                continue
-            
-            # Check if this is a response to our read command
-            if len(msg.data) == 8:
-                if msg.data[0] == (self.motor_id & 0xFF) and msg.data[1] == ((self.motor_id >> 8) & 0xFF):
-                    if msg.data[2] == 0x33 and msg.data[3] == rid:
-                        # Extract data from D[4-7] (D4 is low byte, D7 is high byte)
-                        data_bytes = bytes([msg.data[4], msg.data[5], msg.data[6], msg.data[7]])
-                        
-                        # Use data type from register table
-                        if reg_info.data_type == "float":
-                            return struct.unpack("<f", data_bytes)[0]  # Little-endian float
-                        elif reg_info.data_type == "uint32":
-                            return struct.unpack("<I", data_bytes)[0]  # Little-endian uint32
-                        else:
-                            raise ValueError(f"Unknown data_type: {reg_info.data_type} for register {rid}")
-        
-        raise TimeoutError(f"Timeout waiting for register {rid} ({reg_info.variable}) read response")
+        with self.registers_lock:
+            if rid in self.registers:
+                return self.registers[rid]
+            else:
+                raise KeyError(f"Register {rid} not found in register table")
 
     def write_register(self, rid: int, value: float | int) -> None:
         """
@@ -582,11 +624,16 @@ class DaMiaoMotor:
         Returns:
             Dictionary mapping register ID to value
         """
+        for rid, reg_info in REGISTER_TABLE.items():
+            if reg_info.access in ["RO", "RW"]:  # Readable registers
+                self.request_register_reading(rid)
+                time.sleep(0.0005)
         results: Dict[int, float | int] = {}
+        time.sleep(0.01)  # wait for the replies
         for rid, reg_info in REGISTER_TABLE.items():
             if reg_info.access in ["RO", "RW"]:  # Readable registers
                 try:
-                    results[rid] = self.read_register(rid, timeout=timeout)
+                    results[rid] = self.get_register(rid, timeout=timeout)
                 except (TimeoutError, KeyError, ValueError) as e:
                     # Store error as string for debugging
                     results[rid] = f"ERROR: {e}"

@@ -134,7 +134,7 @@ controller = DaMiaoController(channel="can0")
 motor = controller.add_motor(motor_id=0x01, feedback_id=0x00)
 
 # Read a specific register
-value = motor.read_register(0x00)  # Read UV_Value
+value = motor.get_register(0x00)  # Read UV_Value
 
 # Check if read was successful
 if value is not None:

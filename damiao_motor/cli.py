@@ -201,8 +201,8 @@ def scan_motors(
                 print(f"  [SENT] 0x{motor.motor_id:03X} [{data_hex}]")
     except Exception as e:
         error_str = str(e)
-        if "Error Code 105" in error_str or "No buffer space available" in error_str or "[Errno 105]" in error_str:
-            print(f"\n⚠ [ERROR CODE 105] No buffer space available when sending commands")
+        if "Error Code 80" in error_str or "No buffer space available" in error_str or "[Errno 80]" in error_str:
+            print(f"\n⚠ [ERROR CODE 80] No buffer space available when sending commands")
             print(f"  Original error: {e}")
             print(f"\n  This error typically indicates:")
             print(f"    - No CAN device (motor) is connected to the bus")
@@ -347,18 +347,18 @@ def scan_motors(
     # Print motor register table if no motor ID conflicts
     if not conflicted_motor_ids and motor_registers:
         print()
-        print("=" * 120)
+        print("=" * 80)
         print(f"{GREEN}Detected Motors - Register Parameters{RESET}")
-        print("=" * 120)
+        print("=" * 80)
         
         # Group registers by motor
         for motor_id in sorted(motor_registers.keys()):
             registers = motor_registers[motor_id]
             print()
             print(f"{GREEN}Motor ID: 0x{motor_id:02X} ({motor_id}){RESET}")
-            print("-" * 120)
-            print(f"{'RID':<6} {'Variable':<20} {'Description':<35} {'Value':<20} {'Type':<10} {'Access':<8}")
-            print("-" * 120)
+            print("-" * 80)
+            print(f"{'RID':<4} {'Variable':<10} {'Description':<35} {'Value':<12} {'Type':<8} {'Access':<2}")
+            print("-" * 80)
             
             for rid in sorted(registers.keys()):
                 if rid not in REGISTER_TABLE:
@@ -371,7 +371,7 @@ def scan_motors(
                 if isinstance(value, str) and value.startswith("ERROR"):
                     value_str = value
                 elif reg_info.data_type == "float":
-                    value_str = f"{float(value):.6f}"
+                    value_str = f"{float(value):.2f}"
                 else:
                     value_str = str(int(value))
                 
@@ -379,15 +379,15 @@ def scan_motors(
                 desc = reg_info.description[:33] + ".." if len(reg_info.description) > 35 else reg_info.description
                 
                 print(
-                    f"{rid:<6} "
-                    f"{reg_info.variable:<20} "
+                    f"{rid:<4} "
+                    f"{reg_info.variable:<10} "
                     f"{desc:<35} "
-                    f"{value_str:<20} "
-                    f"{reg_info.data_type:<10} "
-                    f"{reg_info.access:<8}"
+                    f"{value_str:<12} "
+                    f"{reg_info.data_type:<8} "
+                    f"{reg_info.access:<2}"
                 )
         
-        print("=" * 120)
+        print("=" * 80)
 
     # Print debug summary if messages were collected
     if debug and debug_messages:
@@ -433,7 +433,7 @@ def ensure_control_mode(motor, control_mode: str) -> None:
     
     try:
         # Read current control mode (register 10)
-        current_mode = motor.read_register(10, timeout=1.0)
+        current_mode = motor.get_register(10, timeout=1.0)
         current_mode_int = int(current_mode)
         
         if current_mode_int == desired_register_value:
@@ -448,7 +448,7 @@ def ensure_control_mode(motor, control_mode: str) -> None:
         
         # Verify the write by reading back
         time.sleep(0.1)  # Small delay to allow register to update
-        verify_mode = motor.read_register(10, timeout=1.0)
+        verify_mode = motor.get_register(10, timeout=1.0)
         verify_mode_int = int(verify_mode)
         
         if verify_mode_int == desired_register_value:
@@ -679,7 +679,7 @@ def cmd_set_motor_id(args) -> None:
         
         # Read current receive ID (register 8)
         try:
-            current_receive_id = motor.read_register(8, timeout=1.0)
+            current_receive_id = motor.get_register(8, timeout=1.0)
             print(f"Current Receive ID (register 8): {int(current_receive_id)} (0x{int(current_receive_id):02X})")
         except Exception as e:
             print(f"⚠ Warning: Could not read register 8: {e}")
@@ -1029,7 +1029,7 @@ def cmd_set_feedback_id(args) -> None:
         
         # Read current feedback ID (register 7)
         try:
-            current_feedback_id = motor.read_register(7, timeout=1.0)
+            current_feedback_id = motor.get_register(7, timeout=1.0)
             print(f"Current Feedback ID (register 7): {int(current_feedback_id)} (0x{int(current_feedback_id):02X})")
         except Exception as e:
             print(f"⚠ Warning: Could not read register 7: {e}")
