@@ -1,0 +1,28 @@
+# CLI Module API
+
+This page documents the Python API for the CLI module. For user-facing CLI documentation, see the [CLI Reference](../cli-reference/index.md).
+
+## Main Entry Point
+
+::: damiao_motor.cli.unified_main
+
+## Command Handlers
+
+::: damiao_motor.cli.cmd_scan
+
+::: damiao_motor.cli.cmd_send_cmd
+
+::: damiao_motor.cli.cmd_set_zero
+
+::: damiao_motor.cli.cmd_set_zero_position
+
+::: damiao_motor.cli.cmd_set_can_timeout
+
+::: damiao_motor.cli.cmd_set_motor_id
+
+::: damiao_motor.cli.cmd_set_feedback_id
+
+## Utility Functions
+
+::: damiao_motor.cli.scan_motors
+

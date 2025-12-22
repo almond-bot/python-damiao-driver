@@ -200,6 +200,11 @@ def scan_motors(
     try:
         for motor in motors.values():
             motor.send_cmd(target_position=0.0, target_velocity=0.0, stiffness=0.0, damping=0.0, feedforward_torque=0.0)
+            if debug:
+                # Print sent command in debug mode
+                cmd_data = motor.encode_cmd_msg(0.0, 0.0, 0.0, 0.0, 0.0)
+                data_hex = " ".join(f"{b:02X}" for b in cmd_data)
+                print(f"  [SENT] 0x{motor.motor_id:03X} [{data_hex}]")
     except Exception as e:
         error_str = str(e)
         if "Error Code 105" in error_str or "No buffer space available" in error_str or "[Errno 105]" in error_str:
@@ -238,7 +243,7 @@ def scan_motors(
     motor_registers: Dict[int, Dict[int, float | int]] = {}  # motor_id -> {rid -> value}
 
     while time.perf_counter() - start_time < duration_s:
-        # Debug mode: collect raw messages
+        # Debug mode: collect and print raw messages immediately
         if debug:
             # Read and collect raw messages, then process normally
             while True:
@@ -246,7 +251,10 @@ def scan_motors(
                 if msg is None:
                     break
                 data_hex = " ".join(f"{b:02X}" for b in msg.data)
-                debug_messages.append(f"  0x{msg.arbitration_id:03X} [{data_hex}]")
+                debug_msg = f"  0x{msg.arbitration_id:03X} [{data_hex}]"
+                debug_messages.append(debug_msg)
+                # Print immediately in debug mode
+                print(debug_msg)
                 # Process the message manually for debug mode
                 if len(msg.data) == 8:
                     logical_id = msg.data[0] & 0x0F
@@ -387,13 +395,12 @@ def scan_motors(
         
         print("=" * 120)
 
-    # Print debug messages in a separate section
+    # Print debug summary if messages were collected
     if debug and debug_messages:
         print()
         print("=" * 60)
-        print("DEBUG: Raw CAN Messages")
-        for msg in debug_messages:
-            print(msg)
+        print(f"DEBUG: Total {len(debug_messages)} raw CAN messages received")
+        print("=" * 60)
 
     # Cleanup
     try:
@@ -404,64 +411,36 @@ def scan_motors(
     return responded_ids
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Scan for connected DaMiao motors on CAN bus",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Scan default IDs (0x01-0x10) on can0
-  damiao-scan
-
-  # Scan specific motor IDs
-  damiao-scan --ids 1 2 3
-
-  # Use different CAN channel
-  damiao-scan --channel can1
-
-  # Listen longer for responses
-  damiao-scan --duration 5.0
-        """,
-    )
-    parser.add_argument(
-        "--channel",
-        type=str,
-        default="can0",
-        help="CAN channel (default: can0)",
-    )
-    parser.add_argument(
-        "--bustype",
-        type=str,
-        default="socketcan",
-        help="CAN bus type (default: socketcan)",
-    )
-    parser.add_argument(
-        "--ids",
-        type=int,
-        nargs="+",
-        metavar="ID",
-        help="Motor IDs to test (e.g., --ids 1 2 3). If not specified, tests IDs 0x01-0x10.",
-    )
-    parser.add_argument(
-        "--duration",
-        type=float,
-        default=0.5,
-        help="Duration to listen for responses in seconds (default: 0.5)",
-    )
-    parser.add_argument(
-        "--bitrate",
-        type=int,
-        default=1000000,
-        help="CAN bitrate in bits per second (default: 1000000). Only used when bringing up interface.",
-    )
-    parser.add_argument(
-        "--debug",
-        action="store_true",
-        help="Print all raw CAN messages for debugging.",
-    )
-
-    args = parser.parse_args()
-
+def cmd_scan(args) -> None:
+    """
+    Handle 'scan' subcommand.
+    
+    Scans for connected motors on the CAN bus by sending zero commands and listening for feedback.
+    
+    Args:
+        args: Parsed command-line arguments containing:
+            - channel: CAN channel (default: can0)
+            - bustype: CAN bus type (default: socketcan)
+            - ids: Optional list of motor IDs to test (default: 0x01-0x10)
+            - duration: Duration to listen for responses in seconds (default: 0.5)
+            - bitrate: CAN bitrate in bits per second (default: 1000000)
+            - debug: Print all raw CAN messages for debugging (default: False)
+    
+    Examples:
+        ```bash
+        # Scan default ID range (0x01-0x10)
+        damiao scan
+        
+        # Scan specific motor IDs
+        damiao scan --ids 1 2 3
+        
+        # Scan with longer listen duration
+        damiao scan --duration 2.0
+        
+        # Scan with debug output
+        damiao scan --debug
+        ```
+    """
     print("=" * 60)
     print("DaMiao Motor Scanner")
     print("=" * 60)
@@ -508,6 +487,913 @@ Examples:
         raise
 
 
+def cmd_set_zero(args) -> None:
+    """
+    Handle 'set-zero-command' subcommand.
+    
+    Sends a zero command (pos=0, vel=0, torq=0, kp=0, kd=0) to a motor continuously.
+    Loops until interrupted with Ctrl+C.
+    
+    Args:
+        args: Parsed command-line arguments containing:
+            - motor_id: Motor ID to send zero command to (required)
+            - frequency: Command frequency in Hz (default: 100.0)
+            - channel: CAN channel (default: can0)
+            - bustype: CAN bus type (default: socketcan)
+            - bitrate: CAN bitrate in bits per second (default: 1000000)
+    
+    Examples:
+        ```bash
+        # Send zero command continuously
+        damiao set-zero-command --id 1
+        
+        # With custom frequency
+        damiao set-zero-command --id 1 --frequency 50.0
+        ```
+    """
+    print("=" * 60)
+    print("DaMiao Motor - Set Zero Command")
+    print("=" * 60)
+    print(f"CAN channel: {args.channel}")
+    print(f"Motor ID: 0x{args.motor_id:02X} ({args.motor_id})")
+    print("=" * 60)
+    print()
+
+    # Check and bring up CAN interface if needed
+    if args.bustype == "socketcan":
+        if not check_and_bring_up_can_interface(args.channel, bitrate=args.bitrate):
+            print(f"⚠ Warning: Could not verify {args.channel} is ready. Continuing anyway...")
+
+    controller = DaMiaoController(channel=args.channel, bustype=args.bustype)
+    
+    try:
+        motor = controller.add_motor(motor_id=args.motor_id, feedback_id=0x00)
+        
+        print(f"Sending zero command continuously (press Ctrl+C to stop)...")
+        print(f"  Command: pos=0, vel=0, torq=0, kp=0, kd=0")
+        print(f"  Frequency: {args.frequency} Hz")
+        print()
+        
+        interval = 1.0 / args.frequency if args.frequency > 0 else 0.01
+        
+        try:
+            while True:
+                motor.set_zero_command()
+                controller.poll_feedback()
+                
+                if motor.state:
+                    state = motor.state
+                    status_code = state.get("status_code", "N/A")
+                    status_name = state.get("status", "UNKNOWN")
+                    print(f"State: {status_code} ({status_name}) | "
+                          f"Pos:{state.get('pos', 0.0): 8.3f} rad | "
+                          f"Vel:{state.get('vel', 0.0): 8.3f} rad/s | "
+                          f"Torq:{state.get('torq', 0.0): 8.3f} Nm | "
+                          f"T_mos:{state.get('t_mos', 0.0):5.1f}°C | "
+                          f"T_rotor:{state.get('t_rotor', 0.0):5.1f}°C")
+                
+                time.sleep(interval)
+        except KeyboardInterrupt:
+            print("\n\nStopped by user.")
+        
+    except Exception as e:
+        print(f"Error: {e}")
+        raise
+    finally:
+        print("Shutting down controller...")
+        controller.shutdown()
+
+
+def cmd_set_motor_id(args) -> None:
+    """
+    Handle 'set-motor-id' subcommand.
+    
+    Changes the motor's receive ID (ESC_ID, register 8). This is the ID used to send commands to the motor.
+    
+    Args:
+        args: Parsed command-line arguments containing:
+            - current: Current motor ID (to connect to the motor) (required)
+            - target: Target motor ID (new receive ID) (required)
+            - channel: CAN channel (default: can0)
+            - bustype: CAN bus type (default: socketcan)
+            - bitrate: CAN bitrate in bits per second (default: 1000000)
+    
+    Note:
+        After changing the motor ID, you will need to use the new ID to communicate with the motor.
+        The value is stored to flash memory after setting.
+    
+    Examples:
+        ```bash
+        # Change motor ID from 1 to 2
+        damiao set-motor-id --current 1 --target 2
+        ```
+    """
+    print("=" * 60)
+    print("DaMiao Motor - Set Motor ID (Receive ID)")
+    print("=" * 60)
+    print(f"CAN channel: {args.channel}")
+    print(f"Current Motor ID: 0x{args.current:02X} ({args.current})")
+    print(f"Target Motor ID: 0x{args.target:02X} ({args.target})")
+    print("=" * 60)
+    print()
+
+    if args.current == args.target:
+        print("Current and target IDs are the same. No change needed.")
+        return
+
+    # Check and bring up CAN interface if needed
+    if args.bustype == "socketcan":
+        if not check_and_bring_up_can_interface(args.channel, bitrate=args.bitrate):
+            print(f"⚠ Warning: Could not verify {args.channel} is ready. Continuing anyway...")
+
+    controller = DaMiaoController(channel=args.channel, bustype=args.bustype)
+    
+    try:
+        # Use current ID to connect
+        motor = controller.add_motor(motor_id=args.current, feedback_id=0x00)
+        
+        print(f"Reading current register values...")
+        time.sleep(0.1)
+        controller.poll_feedback()
+        
+        # Read current receive ID (register 8)
+        try:
+            current_receive_id = motor.read_register(8, timeout=1.0)
+            print(f"Current Receive ID (register 8): {int(current_receive_id)} (0x{int(current_receive_id):02X})")
+        except Exception as e:
+            print(f"⚠ Warning: Could not read register 8: {e}")
+            print("  Proceeding with write anyway...")
+        
+        print(f"Writing new Receive ID (register 8) = {args.target} (0x{args.target:02X})...")
+        motor.write_register(8, args.target)
+        
+        # Store parameters to flash
+        print("Storing parameters to flash...")
+        try:
+            motor.store_parameters()
+            print("✓ Parameters stored to flash")
+        except Exception as e:
+            print(f"⚠ Warning: Could not store parameters: {e}")
+        
+        print()
+        print(f"✓ Motor ID changed from 0x{args.current:02X} to 0x{args.target:02X}")
+        print(f"  Note: You may need to reconnect using the new ID: 0x{args.target:02X}")
+        
+    except Exception as e:
+        print(f"Error: {e}")
+        raise
+    finally:
+        controller.shutdown()
+
+
+def cmd_set_zero_position(args) -> None:
+    """
+    Handle 'set-zero-position' subcommand.
+    
+    Sets the current output shaft position to zero (save position zero).
+    
+    Args:
+        args: Parsed command-line arguments containing:
+            - motor_id: Motor ID (required)
+            - channel: CAN channel (default: can0)
+            - bustype: CAN bus type (default: socketcan)
+            - bitrate: CAN bitrate in bits per second (default: 1000000)
+    
+    Examples:
+        ```bash
+        # Set current position to zero
+        damiao set-zero-position --id 1
+        ```
+    """
+    print("=" * 60)
+    print("DaMiao Motor - Set Zero Position")
+    print("=" * 60)
+    print(f"CAN channel: {args.channel}")
+    print(f"Motor ID: 0x{args.motor_id:02X} ({args.motor_id})")
+    print("=" * 60)
+    print()
+
+    # Check and bring up CAN interface if needed
+    if args.bustype == "socketcan":
+        if not check_and_bring_up_can_interface(args.channel, bitrate=args.bitrate):
+            print(f"⚠ Warning: Could not verify {args.channel} is ready. Continuing anyway...")
+
+    controller = DaMiaoController(channel=args.channel, bustype=args.bustype)
+    
+    try:
+        motor = controller.add_motor(motor_id=args.motor_id, feedback_id=0x00)
+        
+        print(f"Setting current position to zero...")
+        motor.set_zero_position()
+        print(f"✓ Position zero set")
+        
+    except Exception as e:
+        print(f"Error: {e}")
+        raise
+    finally:
+        controller.shutdown()
+
+
+def cmd_set_can_timeout(args) -> None:
+    """
+    Handle 'set-can-timeout' subcommand.
+    
+    Sets the CAN timeout alarm time (register 9) in milliseconds.
+    
+    Args:
+        args: Parsed command-line arguments containing:
+            - motor_id: Motor ID (required)
+            - timeout_ms: Timeout in milliseconds (required)
+            - channel: CAN channel (default: can0)
+            - bustype: CAN bus type (default: socketcan)
+            - bitrate: CAN bitrate in bits per second (default: 1000000)
+    
+    Note:
+        Register 9 stores timeout in units of 50 microseconds: **1 register unit = 50 microseconds**.
+        
+        The timeout is internally converted from milliseconds to register units using:
+        register_value = timeout_ms × 20
+        
+        Examples:
+        - 1000 ms = 20,000 register units
+        - 50 ms = 1,000 register units
+        
+        The value is stored to flash memory after setting.
+    
+    Examples:
+        ```bash
+        # Set CAN timeout to 1000 ms
+        damiao set-can-timeout --id 1 --timeout 1000
+        ```
+    """
+    print("=" * 60)
+    print("DaMiao Motor - Set CAN Timeout")
+    print("=" * 60)
+    print(f"CAN channel: {args.channel}")
+    print(f"Motor ID: 0x{args.motor_id:02X} ({args.motor_id})")
+    print(f"Timeout: {args.timeout_ms} ms")
+    print("=" * 60)
+    print()
+
+    # Check and bring up CAN interface if needed
+    if args.bustype == "socketcan":
+        if not check_and_bring_up_can_interface(args.channel, bitrate=args.bitrate):
+            print(f"⚠ Warning: Could not verify {args.channel} is ready. Continuing anyway...")
+
+    controller = DaMiaoController(channel=args.channel, bustype=args.bustype)
+    
+    try:
+        motor = controller.add_motor(motor_id=args.motor_id, feedback_id=0x00)
+        
+        print(f"Setting CAN timeout to {args.timeout_ms} ms (register 9)...")
+        motor.set_can_timeout(args.timeout_ms)
+        
+        # Store parameters to flash
+        print("Storing parameters to flash...")
+        try:
+            motor.store_parameters()
+            print("✓ Parameters stored to flash")
+        except Exception as e:
+            print(f"⚠ Warning: Could not store parameters: {e}")
+        
+        print()
+        print(f"✓ CAN timeout set to {args.timeout_ms} ms")
+        
+    except Exception as e:
+        print(f"Error: {e}")
+        raise
+    finally:
+        controller.shutdown()
+
+
+def cmd_send_cmd(args) -> None:
+    """
+    Handle unified 'send-cmd' subcommand.
+    
+    Sends command to motor with specified control mode. Loops continuously until Ctrl+C.
+    Supports MIT, position_velocity, velocity, and force_position_hybrid control modes.
+    
+    Args:
+        args: Parsed command-line arguments containing:
+            - motor_id: Motor ID (required)
+            - mode: Control mode - "MIT", "position_velocity", "velocity", or "force_position_hybrid" (default: MIT)
+            - position: Desired position (radians) - for MIT, position_velocity, force_position_hybrid modes
+            - velocity: Desired velocity (rad/s) - for MIT, position_velocity, velocity modes
+            - stiffness: Stiffness (kp) for MIT mode (default: 0.0)
+            - damping: Damping (kd) for MIT mode (default: 0.0)
+            - feedforward_torque: Feedforward torque for MIT mode (default: 0.0)
+            - velocity_limit: Velocity limit (rad/s, 0-100) for force_position_hybrid mode
+            - current_limit: Torque current limit normalized (0.0-1.0) for force_position_hybrid mode
+            - frequency: Command frequency in Hz (default: 100.0)
+            - channel: CAN channel (default: can0)
+            - bustype: CAN bus type (default: socketcan)
+            - bitrate: CAN bitrate in bits per second (default: 1000000)
+    
+    Examples:
+        ```bash
+        # MIT mode (default)
+        damiao send-cmd --id 1 --mode MIT --position 1.5 --velocity 0.0 --stiffness 20.0
+        
+        # Position-Velocity mode
+        damiao send-cmd --id 1 --mode position_velocity --position 1.5 --velocity 2.0
+        
+        # Velocity mode
+        damiao send-cmd --id 1 --mode velocity --velocity 3.0
+        
+        # Force-Position Hybrid mode
+        damiao send-cmd --id 1 --mode force_position_hybrid --position 1.5 --velocity-limit 50.0 --current-limit 0.8
+        ```
+    """
+    print("=" * 60)
+    print("DaMiao Motor - Send Command")
+    print("=" * 60)
+    print(f"CAN channel: {args.channel}")
+    print(f"Motor ID: 0x{args.motor_id:02X} ({args.motor_id})")
+    print(f"Control Mode: {args.mode}")
+    if args.mode == "MIT":
+        print(f"  Position: {args.position:.6f} rad")
+        print(f"  Velocity: {args.velocity:.6f} rad/s")
+        print(f"  Stiffness (kp): {args.stiffness:.6f}")
+        print(f"  Damping (kd): {args.damping:.6f}")
+        print(f"  Feedforward Torque: {args.feedforward_torque:.6f} Nm")
+    elif args.mode == "position_velocity":
+        print(f"  Position: {args.position:.6f} rad")
+        print(f"  Velocity: {args.velocity:.6f} rad/s")
+    elif args.mode == "velocity":
+        print(f"  Velocity: {args.velocity:.6f} rad/s")
+    elif args.mode == "force_position_hybrid":
+        print(f"  Position: {args.position:.6f} rad")
+        print(f"  Velocity Limit: {args.velocity_limit:.6f} rad/s")
+        print(f"  Current Limit: {args.current_limit:.6f}")
+    print(f"Frequency: {args.frequency} Hz")
+    print("=" * 60)
+    print()
+
+    # Check and bring up CAN interface if needed
+    if args.bustype == "socketcan":
+        if not check_and_bring_up_can_interface(args.channel, bitrate=args.bitrate):
+            print(f"⚠ Warning: Could not verify {args.channel} is ready. Continuing anyway...")
+
+    controller = DaMiaoController(channel=args.channel, bustype=args.bustype)
+    
+    try:
+        motor = controller.add_motor(motor_id=args.motor_id, feedback_id=0x00)
+        
+        # Determine CAN ID based on mode
+        can_id_map = {
+            "MIT": args.motor_id,
+            "position_velocity": 0x100 + args.motor_id,
+            "velocity": 0x200 + args.motor_id,
+            "force_position_hybrid": 0x300 + args.motor_id,
+        }
+        can_id = can_id_map.get(args.mode, args.motor_id)
+        
+        print(f"Sending command continuously (press Ctrl+C to stop)...")
+        print(f"  CAN ID: 0x{can_id:03X}")
+        print(f"  Mode: {args.mode}")
+        print(f"  Frequency: {args.frequency} Hz")
+        print()
+        
+        interval = 1.0 / args.frequency if args.frequency > 0 else 0.01
+        
+        try:
+            while True:
+                if args.mode == "MIT":
+                    motor.send_cmd(
+                        target_position=args.position,
+                        target_velocity=args.velocity,
+                        stiffness=args.stiffness,
+                        damping=args.damping,
+                        feedforward_torque=args.feedforward_torque,
+                        control_mode="MIT"
+                    )
+                elif args.mode == "position_velocity":
+                    motor.send_cmd(
+                        target_position=args.position,
+                        target_velocity=args.velocity,
+                        control_mode="position_velocity"
+                    )
+                elif args.mode == "velocity":
+                    motor.send_cmd(
+                        target_velocity=args.velocity,
+                        control_mode="velocity"
+                    )
+                elif args.mode == "force_position_hybrid":
+                    motor.send_cmd(
+                        target_position=args.position,
+                        velocity_limit=args.velocity_limit,
+                        current_limit=args.current_limit,
+                        control_mode="force_position_hybrid"
+                    )
+                
+                controller.poll_feedback()
+                
+                if motor.state:
+                    state = motor.state
+                    status_code = state.get("status_code", "N/A")
+                    status_name = state.get("status", "UNKNOWN")
+                    print(f"State: {status_code} ({status_name}) | "
+                          f"Pos:{state.get('pos', 0.0): 8.3f} rad | "
+                          f"Vel:{state.get('vel', 0.0): 8.3f} rad/s | "
+                          f"Torq:{state.get('torq', 0.0): 8.3f} Nm | "
+                          f"T_mos:{state.get('t_mos', 0.0):5.1f}°C | "
+                          f"T_rotor:{state.get('t_rotor', 0.0):5.1f}°C")
+                
+                time.sleep(interval)
+        except KeyboardInterrupt:
+            print("\n\nStopped by user.")
+        
+    except Exception as e:
+        print(f"Error: {e}")
+        raise
+    finally:
+        print("Shutting down controller...")
+        controller.shutdown()
+
+
+def cmd_set_feedback_id(args) -> None:
+    """
+    Handle 'set-feedback-id' subcommand.
+    
+    Changes the motor's feedback ID (MST_ID, register 7). This is the ID used to identify feedback messages from the motor.
+    
+    Args:
+        args: Parsed command-line arguments containing:
+            - current: Current motor ID (to connect to the motor) (required)
+            - target: Target feedback ID (new MST_ID) (required)
+            - channel: CAN channel (default: can0)
+            - bustype: CAN bus type (default: socketcan)
+            - bitrate: CAN bitrate in bits per second (default: 1000000)
+    
+    Note:
+        The motor will now respond with feedback using the new feedback ID.
+        The value is stored to flash memory after setting.
+    
+    Examples:
+        ```bash
+        # Change feedback ID to 3 (using motor ID 1 to connect)
+        damiao set-feedback-id --current 1 --target 3
+        ```
+    """
+    print("=" * 60)
+    print("DaMiao Motor - Set Feedback ID (MST_ID)")
+    print("=" * 60)
+    print(f"CAN channel: {args.channel}")
+    print(f"Current Motor ID: 0x{args.current:02X} ({args.current})")
+    print(f"Target Feedback ID: 0x{args.target:02X} ({args.target})")
+    print("=" * 60)
+    print()
+
+    # Check and bring up CAN interface if needed
+    if args.bustype == "socketcan":
+        if not check_and_bring_up_can_interface(args.channel, bitrate=args.bitrate):
+            print(f"⚠ Warning: Could not verify {args.channel} is ready. Continuing anyway...")
+
+    controller = DaMiaoController(channel=args.channel, bustype=args.bustype)
+    
+    try:
+        # Use current motor ID to connect
+        motor = controller.add_motor(motor_id=args.current, feedback_id=0x00)
+        
+        print(f"Reading current register values...")
+        time.sleep(0.1)
+        controller.poll_feedback()
+        
+        # Read current feedback ID (register 7)
+        try:
+            current_feedback_id = motor.read_register(7, timeout=1.0)
+            print(f"Current Feedback ID (register 7): {int(current_feedback_id)} (0x{int(current_feedback_id):02X})")
+        except Exception as e:
+            print(f"⚠ Warning: Could not read register 7: {e}")
+            print("  Proceeding with write anyway...")
+        
+        print(f"Writing new Feedback ID (register 7) = {args.target} (0x{args.target:02X})...")
+        motor.write_register(7, args.target)
+        
+        # Store parameters to flash
+        print("Storing parameters to flash...")
+        try:
+            motor.store_parameters()
+            print("✓ Parameters stored to flash")
+        except Exception as e:
+            print(f"⚠ Warning: Could not store parameters: {e}")
+        
+        print()
+        print(f"✓ Feedback ID changed to 0x{args.target:02X}")
+        print(f"  Note: Motor will now respond with feedback ID 0x{args.target:02X}")
+        
+    except Exception as e:
+        print(f"Error: {e}")
+        raise
+    finally:
+        controller.shutdown()
+
+
+def unified_main() -> None:
+    """
+    Unified CLI entry point with subcommands.
+    
+    Main entry point for the `damiao` command-line tool. Provides a unified interface
+    for scanning, configuring, and controlling DaMiao motors over CAN bus.
+    
+    Available commands:
+        - scan: Scan for connected motors
+        - send-cmd: Send command to motor (all control modes)
+        - set-zero-command: Send zero command continuously
+        - set-zero-position: Set current position to zero
+        - set-can-timeout: Set CAN timeout alarm time
+        - set-motor-id: Change motor receive ID
+        - set-feedback-id: Change motor feedback ID
+    
+    Global options (available for all commands):
+        - --channel: CAN channel (default: can0)
+        - --bustype: CAN bus type (default: socketcan)
+        - --bitrate: CAN bitrate in bits per second (default: 1000000)
+    
+    Examples:
+        ```bash
+        # Scan for motors
+        damiao scan
+        
+        # Send command in MIT mode
+        damiao send-cmd --id 1 --mode MIT --position 1.5 --velocity 0.0 --stiffness 20.0
+        
+        # Set current position to zero
+        damiao set-zero-position --id 1
+        ```
+    """
+    parser = argparse.ArgumentParser(
+        description="DaMiao Motor CLI Tool - Control and configure DaMiao motors over CAN bus",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Scan for motors on default CAN channel (can0)
+  damiao scan
+
+  # Scan specific motor IDs with debug output
+  damiao scan --ids 1 2 3 --debug
+
+  # Send command in MIT mode
+  damiao send-cmd --id 1 --mode MIT --position 1.5 --velocity 0.0 --stiffness 20.0
+
+  # Send command in velocity mode
+  damiao send-cmd --id 1 --mode velocity --velocity 3.0
+
+  # Set current position to zero
+  damiao set-zero-position --id 1
+
+  # Set CAN timeout
+  damiao set-can-timeout --id 1 --timeout 1000
+
+  # Use different CAN channel (can be before or after command)
+  damiao scan --channel can_leader_l
+  damiao send-cmd --id 1 --mode MIT --channel can_leader_l
+
+For more information about a specific command, use:
+  damiao <command> --help
+        """,
+    )
+    
+    # Global arguments
+    parser.add_argument(
+        "--channel",
+        type=str,
+        default="can0",
+        help="CAN channel (default: can0)",
+    )
+    parser.add_argument(
+        "--bustype",
+        type=str,
+        default="socketcan",
+        help="CAN bus type (default: socketcan)",
+    )
+    parser.add_argument(
+        "--bitrate",
+        type=int,
+        default=1000000,
+        help="CAN bitrate in bits per second (default: 1000000). Only used when bringing up interface.",
+    )
+    
+    subparsers = parser.add_subparsers(
+        dest="command",
+        help="Available commands",
+        required=True,
+        metavar="COMMAND",
+        title="Commands",
+        description="Use 'damiao <command> --help' for more information about a specific command."
+    )
+    
+    # Helper function to add global arguments to subcommands
+    def add_global_args(subparser):
+        """Add global arguments to a subcommand parser."""
+        subparser.add_argument(
+            "--channel",
+            type=str,
+            default="can0",
+            help="CAN channel (default: can0)",
+        )
+        subparser.add_argument(
+            "--bustype",
+            type=str,
+            default="socketcan",
+            help="CAN bus type (default: socketcan)",
+        )
+        subparser.add_argument(
+            "--bitrate",
+            type=int,
+            default=1000000,
+            help="CAN bitrate in bits per second (default: 1000000). Only used when bringing up interface.",
+        )
+    
+    # scan command
+    scan_parser = subparsers.add_parser(
+        "scan",
+        help="Scan for connected motors on CAN bus",
+        description="Scan for connected DaMiao motors by sending zero commands and listening for responses.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Scan default ID range (0x01-0x10)
+  damiao scan
+
+  # Scan specific motor IDs
+  damiao scan --ids 1 2 3
+
+  # Scan with longer listen duration
+  damiao scan --duration 2.0
+
+  # Scan with debug output (print all raw CAN messages)
+  damiao scan --debug
+        """
+    )
+    scan_parser.add_argument(
+        "--ids",
+        type=int,
+        nargs="+",
+        metavar="ID",
+        help="Motor IDs to test (e.g., --ids 1 2 3). If not specified, tests IDs 0x01-0x10.",
+    )
+    scan_parser.add_argument(
+        "--duration",
+        type=float,
+        default=0.5,
+        help="Duration to listen for responses in seconds (default: 0.5)",
+    )
+    scan_parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Print all raw CAN messages for debugging.",
+    )
+    add_global_args(scan_parser)
+    scan_parser.set_defaults(func=cmd_scan)
+    
+    # set-zero-command (renamed from set-zero)
+    zero_parser = subparsers.add_parser(
+        "set-zero-command",
+        help="Send zero command to a motor (pos=0, vel=0, torq=0, kp=0, kd=0)",
+        description="Send a zero command continuously to a motor.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Send zero command continuously (loops until Ctrl+C)
+  damiao set-zero-command --id 1
+
+  # With custom frequency
+  damiao set-zero-command --id 1 --frequency 50.0
+        """
+    )
+    zero_parser.add_argument(
+        "--id",
+        type=int,
+        required=True,
+        dest="motor_id",
+        help="Motor ID to send zero command to",
+    )
+    zero_parser.add_argument(
+        "--frequency",
+        type=float,
+        default=100.0,
+        help="Command frequency in Hz (default: 100.0)",
+    )
+    add_global_args(zero_parser)
+    zero_parser.set_defaults(func=cmd_set_zero)
+    
+    # set-zero-position command
+    zero_pos_parser = subparsers.add_parser(
+        "set-zero-position",
+        help="Set current position to zero",
+        description="Set the current output shaft position to zero (save position zero).",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Set current position to zero
+  damiao set-zero-position --id 1
+        """
+    )
+    zero_pos_parser.add_argument(
+        "--id",
+        type=int,
+        required=True,
+        dest="motor_id",
+        help="Motor ID",
+    )
+    add_global_args(zero_pos_parser)
+    zero_pos_parser.set_defaults(func=cmd_set_zero_position)
+    
+    # set-can-timeout command
+    timeout_parser = subparsers.add_parser(
+        "set-can-timeout",
+        help="Set CAN timeout alarm time (register 9)",
+        description="Set the CAN timeout alarm time in milliseconds. Register 9 uses units of 50 microseconds (1 unit = 50us).",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Set CAN timeout to 1000 ms
+  damiao set-can-timeout --id 1 --timeout 1000
+        """
+    )
+    timeout_parser.add_argument(
+        "--id",
+        type=int,
+        required=True,
+        dest="motor_id",
+        help="Motor ID",
+    )
+    timeout_parser.add_argument(
+        "--timeout",
+        type=int,
+        required=True,
+        dest="timeout_ms",
+        help="Timeout in milliseconds (ms)",
+    )
+    add_global_args(timeout_parser)
+    timeout_parser.set_defaults(func=cmd_set_can_timeout)
+    
+    # set-motor-id command
+    set_motor_id_parser = subparsers.add_parser(
+        "set-motor-id",
+        help="Set motor receive ID (register 8)",
+        description="Change the motor's receive ID (ESC_ID, register 8). This is the ID used to send commands to the motor.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Change motor ID from 1 to 2
+  damiao set-motor-id --current 1 --target 2
+
+Note: After changing the motor ID, you will need to use the new ID to communicate with the motor.
+        """
+    )
+    set_motor_id_parser.add_argument(
+        "--current",
+        type=int,
+        required=True,
+        help="Current motor ID (to connect to the motor)",
+    )
+    set_motor_id_parser.add_argument(
+        "--target",
+        type=int,
+        required=True,
+        help="Target motor ID (new receive ID)",
+    )
+    add_global_args(set_motor_id_parser)
+    set_motor_id_parser.set_defaults(func=cmd_set_motor_id)
+    
+    # set-feedback-id command
+    set_feedback_id_parser = subparsers.add_parser(
+        "set-feedback-id",
+        help="Set motor feedback ID (register 7)",
+        description="Change the motor's feedback ID (MST_ID, register 7). This is the ID used to identify feedback messages from the motor.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Change feedback ID to 3 (using motor ID 1 to connect)
+  damiao set-feedback-id --current 1 --target 3
+
+Note: The motor will now respond with feedback using the new feedback ID.
+        """
+    )
+    set_feedback_id_parser.add_argument(
+        "--current",
+        type=int,
+        required=True,
+        help="Current motor ID (to connect to the motor)",
+    )
+    set_feedback_id_parser.add_argument(
+        "--target",
+        type=int,
+        required=True,
+        help="Target feedback ID (new MST_ID)",
+    )
+    add_global_args(set_feedback_id_parser)
+    set_feedback_id_parser.set_defaults(func=cmd_set_feedback_id)
+    
+    # send-cmd command (unified command for all modes)
+    send_cmd_parser = subparsers.add_parser(
+        "send-cmd",
+        help="Send command to motor (unified command for all control modes)",
+        description="Send command to motor with specified control mode. Loops continuously until Ctrl+C.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # MIT mode (default)
+  damiao send-cmd --id 1 --mode MIT --position 1.5 --velocity 0.0 --stiffness 20.0 --damping 0.5
+
+  # Position-Velocity mode
+  damiao send-cmd --id 1 --mode position_velocity --position 1.5 --velocity 2.0
+
+  # Velocity mode
+  damiao send-cmd --id 1 --mode velocity --velocity 3.0
+
+  # Force-Position Hybrid mode
+  damiao send-cmd --id 1 --mode force_position_hybrid --position 1.5 --velocity-limit 50.0 --current-limit 0.8
+
+  # With custom frequency
+  damiao send-cmd --id 1 --mode MIT --position 1.5 --frequency 50.0
+        """
+    )
+    send_cmd_parser.add_argument(
+        "--id",
+        type=int,
+        required=True,
+        dest="motor_id",
+        help="Motor ID",
+    )
+    send_cmd_parser.add_argument(
+        "--mode",
+        type=str,
+        default="MIT",
+        choices=["MIT", "position_velocity", "velocity", "force_position_hybrid"],
+        help="Control mode (default: MIT)",
+    )
+    send_cmd_parser.add_argument(
+        "--position",
+        type=float,
+        default=0.0,
+        help="Desired position (radians). Required for MIT, position_velocity, force_position_hybrid modes.",
+    )
+    send_cmd_parser.add_argument(
+        "--velocity",
+        type=float,
+        default=0.0,
+        help="Desired velocity (rad/s). Required for MIT, position_velocity, velocity modes.",
+    )
+    send_cmd_parser.add_argument(
+        "--stiffness",
+        type=float,
+        default=0.0,
+        dest="stiffness",
+        help="Stiffness (kp) for MIT mode (default: 0.0)",
+    )
+    send_cmd_parser.add_argument(
+        "--damping",
+        type=float,
+        default=0.0,
+        dest="damping",
+        help="Damping (kd) for MIT mode (default: 0.0)",
+    )
+    send_cmd_parser.add_argument(
+        "--feedforward-torque",
+        type=float,
+        default=0.0,
+        dest="feedforward_torque",
+        help="Feedforward torque for MIT mode (default: 0.0)",
+    )
+    send_cmd_parser.add_argument(
+        "--velocity-limit",
+        type=float,
+        default=0.0,
+        dest="velocity_limit",
+        help="Velocity limit (rad/s, 0-100) for force_position_hybrid mode",
+    )
+    send_cmd_parser.add_argument(
+        "--current-limit",
+        type=float,
+        default=0.0,
+        dest="current_limit",
+        help="Torque current limit normalized (0.0-1.0) for force_position_hybrid mode",
+    )
+    send_cmd_parser.add_argument(
+        "--frequency",
+        type=float,
+        default=100.0,
+        help="Command frequency in Hz (default: 100.0)",
+    )
+    add_global_args(send_cmd_parser)
+    send_cmd_parser.set_defaults(func=cmd_send_cmd)
+    
+    args = parser.parse_args()
+    
+    # Execute the appropriate command
+    try:
+        args.func(args)
+    except KeyboardInterrupt:
+        print("\n\nInterrupted by user.")
+        sys.exit(1)
+    except Exception as e:
+        print(f"\n\nError: {e}")
+        sys.exit(1)
+
+
 if __name__ == "__main__":
-    main()
+    unified_main()
 

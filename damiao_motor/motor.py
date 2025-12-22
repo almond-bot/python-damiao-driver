@@ -32,7 +32,7 @@ REGISTER_TABLE: Dict[int, RegisterInfo] = {
     # System identification and configuration (7-10)
     7: RegisterInfo(7, "MST_ID", "Feedback ID", "RW", "[0, 0x7FF]", "uint32"),
     8: RegisterInfo(8, "ESC_ID", "Receive ID", "RW", "[0, 0x7FF]", "uint32"),
-    9: RegisterInfo(9, "TIMEOUT", "Timeout alarm time", "RW", "[0, 2^32-1]", "uint32"),
+    9: RegisterInfo(9, "TIMEOUT", "Timeout alarm time (1 unit = 50 microseconds)", "RW", "[0, 2^32-1]", "uint32"),
     10: RegisterInfo(10, "CTRL_MODE", "Control mode", "RW", "[1, 4]", "uint32"),
     
     # Motor physical parameters (11-20) - Read Only
@@ -211,18 +211,105 @@ class DaMiaoMotor:
     def encode_disable_msg() -> bytes:
         return bytes([0xFF] * 7 + [0xFD])
 
+    @staticmethod
+    def encode_save_position_zero_msg() -> bytes:
+        """Encode save position zero command (sets current position to zero)."""
+        return bytes([0xFF] * 7 + [0xFE])
+
+    @staticmethod
+    def encode_clear_error_msg() -> bytes:
+        """Encode clear error command (clears motor errors like overheating)."""
+        return bytes([0xFF] * 7 + [0xFB])
+
     # -----------------------
     # Sending CAN frames
     # -----------------------
-    def send_raw(self, data: bytes) -> None:
-        msg = can.Message(arbitration_id=self.motor_id, data=data, is_extended_id=False)
-        self.bus.send(msg)
+    def send_raw(self, data: bytes, arbitration_id: int | None = None) -> None:
+        """
+        Send raw CAN message.
+        
+        Args:
+            data: CAN message data bytes (must be 8 bytes)
+            arbitration_id: CAN arbitration ID (defaults to motor_id if not specified)
+            
+        Raises:
+            ValueError: If data is not 8 bytes or arbitration_id is invalid
+            OSError: If CAN bus error occurs (e.g., Error Code 105 - No buffer space)
+            can.CanError: If CAN-specific error occurs
+            AttributeError: If bus is not initialized
+        """
+        if len(data) != 8:
+            raise ValueError(f"CAN message data must be 8 bytes, got {len(data)} bytes")
+        
+        if arbitration_id is None:
+            arbitration_id = self.motor_id
+        
+        if arbitration_id < 0 or arbitration_id > 0x7FF:
+            raise ValueError(f"Invalid arbitration_id: {arbitration_id}. Must be in range 0-0x7FF")
+        
+        try:
+            msg = can.Message(arbitration_id=arbitration_id, data=data, is_extended_id=False)
+            self.bus.send(msg)
+        except OSError as e:
+            error_str = str(e)
+            errno = getattr(e, 'errno', None)
+            
+            # Error Code 105: No buffer space available
+            if errno == 105 or "Error Code 105" in error_str or "No buffer space available" in error_str or "[Errno 105]" in error_str:
+                raise OSError(
+                    f"CAN bus buffer full (Error Code 105) when sending to arbitration_id 0x{arbitration_id:03X}. "
+                    f"This typically indicates: no motor connected, motor not powered, or CAN hardware issue. "
+                    f"Original error: {e}"
+                ) from e
+            # Other OSError cases
+            raise OSError(f"CAN bus system error when sending to arbitration_id 0x{arbitration_id:03X}: {e}") from e
+        except can.CanError as e:
+            raise can.CanError(f"CAN bus error when sending to arbitration_id 0x{arbitration_id:03X}: {e}") from e
+        except AttributeError as e:
+            if "bus" in str(e).lower() or "send" in str(e).lower():
+                raise AttributeError(f"CAN bus not initialized. Bus may be closed or not connected.") from e
+            raise
+        except Exception as e:
+            raise RuntimeError(f"Unexpected error sending CAN message to arbitration_id 0x{arbitration_id:03X}: {e}") from e
 
     def enable(self) -> None:
         self.send_raw(self.encode_enable_msg())
 
     def disable(self) -> None:
         self.send_raw(self.encode_disable_msg())
+
+    def set_zero_position(self) -> None:
+        """Set the current output shaft position to zero."""
+        self.send_raw(self.encode_save_position_zero_msg())
+    
+    def set_zero_command(self) -> None:
+        """Send zero command (pos=0, vel=0, torq=0, kp=0, kd=0)."""
+        self.send_cmd(target_position=0.0, target_velocity=0.0, stiffness=0.0, damping=0.0, feedforward_torque=0.0)
+    
+    def set_can_timeout(self, timeout_ms: int) -> None:
+        """
+        Set CAN timeout alarm time (register 9).
+        
+        Args:
+            timeout_ms: Timeout in milliseconds
+        
+        Note:
+            Register 9 stores timeout in units of 50 microseconds: **1 register unit = 50 microseconds**.
+            
+            Conversion formula: register_value = timeout_ms × 20
+            
+            Examples:
+            - 1000 ms = 1,000,000 microseconds = 20,000 register units
+            - 50 ms = 50,000 microseconds = 1,000 register units
+        """
+        # Convert milliseconds to register units: 1 register unit = 50 microseconds
+        # timeout_ms * 1000 us/ms / 50 us/unit = timeout_ms * 20
+        register_value = timeout_ms * 20
+        self.write_register(9, register_value)
+
+    def clear_error(self) -> None:
+        """Clear motor errors (e.g., overheating)."""
+        self.send_raw(self.encode_clear_error_msg())
 
     def send_cmd(
         self,
@@ -231,9 +318,63 @@ class DaMiaoMotor:
         stiffness: float = 0.0,
         damping: float = 0.0,
         feedforward_torque: float = 0.0,
+        control_mode: str = "MIT",
+        velocity_limit: float = 0.0,
+        current_limit: float = 0.0,
     ) -> None:
-        data = self.encode_cmd_msg(target_position, target_velocity, feedforward_torque, stiffness, damping)
-        self.send_raw(data)
+        """
+        Send command to motor with specified control mode.
+        
+        Args:
+            target_position: Desired position (radians)
+            target_velocity: Desired velocity (rad/s)
+            stiffness: Stiffness (kp) for MIT mode
+            damping: Damping (kd) for MIT mode
+            feedforward_torque: Feedforward torque for MIT mode
+            control_mode: Control mode - "MIT" (default), "position_velocity", "velocity", or "force_position_hybrid"
+            velocity_limit: Velocity limit (rad/s, 0-100) for force_position_hybrid mode
+            current_limit: Current limit normalized (0.0-1.0) for force_position_hybrid mode
+        """
+        # Check if motor is disabled and enable it if necessary
+        if self.state and self.state.get("status_code") == DM_MOTOR_DISABLED:
+            self.enable()
+        
+        # Check if motor has lost communication and clear error if necessary
+        if self.state and self.state.get("status_code") == DM_MOTOR_LOST_COMM:
+            self.clear_error()
+        
+        if control_mode == "MIT":
+            # MIT-style control mode (default)
+            data = self.encode_cmd_msg(target_position, target_velocity, feedforward_torque, stiffness, damping)
+            self.send_raw(data)
+        elif control_mode == "position_velocity":
+            # Position-Velocity Mode: CAN ID 0x100 + motor_id
+            data = struct.pack('<ff', target_position, target_velocity)
+            arbitration_id = 0x100 + self.motor_id
+            self.send_raw(data, arbitration_id=arbitration_id)
+        elif control_mode == "velocity":
+            # Velocity Mode: CAN ID 0x200 + motor_id
+            data = struct.pack('<f', target_velocity) + b'\x00' * 4
+            arbitration_id = 0x200 + self.motor_id
+            self.send_raw(data, arbitration_id=arbitration_id)
+        elif control_mode == "force_position_hybrid":
+            # Force-Position Hybrid Mode: CAN ID 0x300 + motor_id
+            # Clamp and scale velocity limit (0-100 rad/s -> 0-10000)
+            v_des_clamped = max(0.0, min(100.0, velocity_limit))
+            v_des_scaled = int(v_des_clamped * 100)
+            v_des_scaled = min(10000, v_des_scaled)
+            
+            # Clamp and scale current limit (0.0-1.0 -> 0-10000)
+            i_des_clamped = max(0.0, min(1.0, current_limit))
+            i_des_scaled = int(i_des_clamped * 10000)
+            i_des_scaled = min(10000, i_des_scaled)
+            
+            # Pack: float (4 bytes) + uint16 (2 bytes) + uint16 (2 bytes)
+            data = struct.pack('<fHH', target_position, v_des_scaled, i_des_scaled)
+            arbitration_id = 0x300 + self.motor_id
+            self.send_raw(data, arbitration_id=arbitration_id)
+        else:
+            raise ValueError(f"Unknown control_mode: {control_mode}. Must be 'MIT', 'position_velocity', 'velocity', or 'force_position_hybrid'")
 
     # -----------------------
     # Decode feedback
@@ -254,6 +395,7 @@ class DaMiaoMotor:
             "can_id": can_id,
             "arbitration_id": arbitration_id,
             "status": decode_state_name(status),
+            "status_code": status,
             "pos": uint_to_float(pos_int, P_MIN, P_MAX, 16),
             "vel": uint_to_float(vel_int, V_MIN, V_MAX, 12),
             "torq": uint_to_float(torq_int, T_MIN, T_MAX, 12),
@@ -290,8 +432,7 @@ class DaMiaoMotor:
                 raise ValueError("Data must be 4 bytes for write operations")
             msg_data = bytes([canid_l, canid_h, cmd_byte, rid]) + data
         
-        msg = can.Message(arbitration_id=0x7FF, data=msg_data, is_extended_id=False)
-        self.bus.send(msg)
+        self.send_raw(msg_data, arbitration_id=0x7FF)
 
     def read_register(self, rid: int, timeout: float = 1.0) -> float | int:
         """
@@ -414,8 +555,7 @@ class DaMiaoMotor:
         """
         canid_l, canid_h = self._encode_can_id(self.motor_id)
         msg_data = bytes([canid_l, canid_h, 0xCC, 0x00, 0x00, 0x00, 0x00, 0x00])
-        msg = can.Message(arbitration_id=0x7FF, data=msg_data, is_extended_id=False)
-        self.bus.send(msg)
+        self.send_raw(msg_data, arbitration_id=0x7FF)
 
     def read_all_registers(self, timeout: float = 0.05) -> Dict[int, float | int]:
         """
@@ -477,7 +617,19 @@ class DaMiaoMotor:
         self.write_register(8, value)
 
     def set_timeout_alarm(self, value: int) -> None:
-        """Set timeout alarm time (register 9)."""
+        """
+        Set timeout alarm time (register 9).
+        
+        Args:
+            value: Timeout value in register units (1 unit = 50 microseconds)
+        
+        Note:
+            This method writes the raw register value. For convenience, use `set_can_timeout()`
+            which accepts milliseconds and handles the conversion automatically.
+            
+            Conversion: 1 register unit = 50 microseconds
+            To convert from milliseconds: register_value = timeout_ms × 20
+        """
         self.write_register(9, value)
 
     def set_control_mode(self, value: int) -> None:

@@ -183,6 +183,10 @@ def set_register(motor_id: int, rid: int):
             return jsonify({'success': False, 'error': 'Value is required'}), 400
         
         motor = _motors[motor_id]
+        
+        # Note: Register 9 (TIMEOUT) uses units of 50 microseconds (1 unit = 50us)
+        # To convert from milliseconds: register_value = timeout_ms × 20
+        # For example: 1000 ms = 20,000 register units, 50 ms = 1,000 register units
         motor.write_register(rid, value)
         
         # If we changed register 7 (MST_ID/feedback_id) or 8 (ESC_ID/receive_id),

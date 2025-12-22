@@ -29,7 +29,7 @@ packages = ["damiao_motor"]
 damiao_motor = ["templates/*.html"]
 
 [project.scripts]
-damiao-scan = "damiao_motor.cli:main"
+damiao = "damiao_motor.cli:unified_main"
 damiao-gui = "damiao_motor.web_gui:main"
 
 

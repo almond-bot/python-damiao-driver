@@ -38,7 +38,7 @@ python -c "import damiao_motor; print(damiao_motor.__version__)"
 You should also be able to use the command-line tools:
 
 ```bash
-damiao-scan --help
+damiao --help
 damiao-gui --help
 ```
 
