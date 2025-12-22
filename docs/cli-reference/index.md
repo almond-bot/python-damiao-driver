@@ -89,7 +89,7 @@ damiao send-cmd [OPTIONS]
 **Examples:**
 ```bash
 # MIT mode (default)
-damiao send-cmd --id 1 --mode MIT --position 1.5 --velocity 0.0 --stiffness 20.0
+damiao send-cmd --id 1 --mode MIT --position 1.5 --velocity 0.0 --stiffness 3.0 --damping 0.5
 
 # Position-Velocity mode
 damiao send-cmd --id 1 --mode position_velocity --position 1.5 --velocity 2.0

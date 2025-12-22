@@ -331,9 +331,9 @@ class DaMiaoMotor:
             stiffness: Stiffness (kp) for MIT mode
             damping: Damping (kd) for MIT mode
             feedforward_torque: Feedforward torque for MIT mode
-            control_mode: Control mode - "MIT" (default), "position_velocity", "velocity", or "force_position_hybrid"
-            velocity_limit: Velocity limit (rad/s, 0-100) for force_position_hybrid mode
-            current_limit: Current limit normalized (0.0-1.0) for force_position_hybrid mode
+            control_mode: Control mode - "MIT" (default), "POS_VEL", "VEL", or "FORCE_POS"
+            velocity_limit: Velocity limit (rad/s, 0-100) for FORCE_POS mode
+            current_limit: Current limit normalized (0.0-1.0) for FORCE_POS mode
         """
         # Check if motor is disabled and enable it if necessary
         if self.state and self.state.get("status_code") == DM_MOTOR_DISABLED:
@@ -347,18 +347,18 @@ class DaMiaoMotor:
             # MIT-style control mode (default)
             data = self.encode_cmd_msg(target_position, target_velocity, feedforward_torque, stiffness, damping)
             self.send_raw(data)
-        elif control_mode == "position_velocity":
-            # Position-Velocity Mode: CAN ID 0x100 + motor_id
+        elif control_mode == "POS_VEL":
+            # POS_VEL Mode: CAN ID 0x100 + motor_id
             data = struct.pack('<ff', target_position, target_velocity)
             arbitration_id = 0x100 + self.motor_id
             self.send_raw(data, arbitration_id=arbitration_id)
-        elif control_mode == "velocity":
-            # Velocity Mode: CAN ID 0x200 + motor_id
+        elif control_mode == "VEL":
+            # VEL Mode: CAN ID 0x200 + motor_id
             data = struct.pack('<f', target_velocity) + b'\x00' * 4
             arbitration_id = 0x200 + self.motor_id
             self.send_raw(data, arbitration_id=arbitration_id)
-        elif control_mode == "force_position_hybrid":
-            # Force-Position Hybrid Mode: CAN ID 0x300 + motor_id
+        elif control_mode == "FORCE_POS":
+            # FORCE_POS Mode: CAN ID 0x300 + motor_id
             # Clamp and scale velocity limit (0-100 rad/s -> 0-10000)
             v_des_clamped = max(0.0, min(100.0, velocity_limit))
             v_des_scaled = int(v_des_clamped * 100)
@@ -374,7 +374,7 @@ class DaMiaoMotor:
             arbitration_id = 0x300 + self.motor_id
             self.send_raw(data, arbitration_id=arbitration_id)
         else:
-            raise ValueError(f"Unknown control_mode: {control_mode}. Must be 'MIT', 'position_velocity', 'velocity', or 'force_position_hybrid'")
+            raise ValueError(f"Unknown control_mode: {control_mode}. Must be 'MIT', 'POS_VEL', 'VEL', or 'FORCE_POS'")
 
     # -----------------------
     # Decode feedback

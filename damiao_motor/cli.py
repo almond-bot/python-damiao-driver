@@ -41,15 +41,9 @@ def check_and_bring_up_can_interface(channel: str, bitrate: int = 1000000) -> bo
         )
         
         if result.returncode != 0:
-            print(f"Interface {channel} does not exist. Creating it...")
-            # Create and bring up the interface
-            subprocess.run(
-                ["sudo", "ip", "link", "set", channel, "up", "type", "can", "bitrate", str(bitrate)],
-                check=True,
-            )
-            print(f"✓ Interface {channel} created and brought up (bitrate: {bitrate})")
-            time.sleep(0.5)  # Give it a moment to initialize
-            return True
+            # Interface does not exist - return False
+            print(f"⚠ Warning: Interface {channel} does not exist.")
+            return False
         
         # Check if interface is UP
         if "state UP" in result.stdout or "state UNKNOWN" in result.stdout:
@@ -417,7 +411,7 @@ def ensure_control_mode(motor, control_mode: str) -> None:
     
     Args:
         motor: DaMiaoMotor instance
-        control_mode: Desired control mode - "MIT", "position_velocity", "velocity", or "force_position_hybrid"
+        control_mode: Desired control mode - "MIT", "POS_VEL", "VEL", or "FORCE_POS"
     
     Raises:
         ValueError: If control_mode is invalid
@@ -427,9 +421,9 @@ def ensure_control_mode(motor, control_mode: str) -> None:
     # Map control mode strings to register values
     mode_to_register = {
         "MIT": 1,
-        "position_velocity": 2,
-        "velocity": 3,
-        "force_position_hybrid": 4,
+        "POS_VEL": 2,
+        "VEL": 3,
+        "FORCE_POS": 4,
     }
     
     if control_mode not in mode_to_register:
@@ -838,19 +832,19 @@ def cmd_send_cmd(args) -> None:
     Handle unified 'send-cmd' subcommand.
     
     Sends command to motor with specified control mode. Loops continuously until Ctrl+C.
-    Supports MIT, position_velocity, velocity, and force_position_hybrid control modes.
+    Supports MIT, POS_VEL, VEL, and FORCE_POS control modes.
     
     Args:
         args: Parsed command-line arguments containing:
             - motor_id: Motor ID (required)
-            - mode: Control mode - "MIT", "position_velocity", "velocity", or "force_position_hybrid" (default: MIT)
-            - position: Desired position (radians) - for MIT, position_velocity, force_position_hybrid modes
-            - velocity: Desired velocity (rad/s) - for MIT, position_velocity, velocity modes
+            - mode: Control mode - "MIT", "POS_VEL", "VEL", or "FORCE_POS" (default: MIT)
+            - position: Desired position (radians) - for MIT, POS_VEL, FORCE_POS modes
+            - velocity: Desired velocity (rad/s) - for MIT, POS_VEL, VEL modes
             - stiffness: Stiffness (kp) for MIT mode (default: 0.0)
             - damping: Damping (kd) for MIT mode (default: 0.0)
             - feedforward_torque: Feedforward torque for MIT mode (default: 0.0)
-            - velocity_limit: Velocity limit (rad/s, 0-100) for force_position_hybrid mode
-            - current_limit: Torque current limit normalized (0.0-1.0) for force_position_hybrid mode
+            - velocity_limit: Velocity limit (rad/s, 0-100) for FORCE_POS mode
+            - current_limit: Torque current limit normalized (0.0-1.0) for FORCE_POS mode
             - frequency: Command frequency in Hz (default: 100.0)
             - channel: CAN channel (default: can0)
             - bustype: CAN bus type (default: socketcan)
@@ -859,16 +853,16 @@ def cmd_send_cmd(args) -> None:
     Examples:
         ```bash
         # MIT mode (default)
-        damiao send-cmd --id 1 --mode MIT --position 1.5 --velocity 0.0 --stiffness 20.0
+        damiao send-cmd --id 1 --mode MIT --position 1.5 --velocity 0.0 --stiffness 3.0 --damping 0.5
         
-        # Position-Velocity mode
-        damiao send-cmd --id 1 --mode position_velocity --position 1.5 --velocity 2.0
+        # POS_VEL mode
+        damiao send-cmd --id 1 --mode POS_VEL --position 1.5 --velocity 2.0
         
-        # Velocity mode
-        damiao send-cmd --id 1 --mode velocity --velocity 3.0
+        # VEL mode
+        damiao send-cmd --id 1 --mode VEL --velocity 3.0
         
-        # Force-Position Hybrid mode
-        damiao send-cmd --id 1 --mode force_position_hybrid --position 1.5 --velocity-limit 50.0 --current-limit 0.8
+        # FORCE_POS mode
+        damiao send-cmd --id 1 --mode FORCE_POS --position 1.5 --velocity-limit 50.0 --current-limit 0.8
         ```
     """
     print("=" * 60)
@@ -883,12 +877,12 @@ def cmd_send_cmd(args) -> None:
         print(f"  Stiffness (kp): {args.stiffness:.6f}")
         print(f"  Damping (kd): {args.damping:.6f}")
         print(f"  Feedforward Torque: {args.feedforward_torque:.6f} Nm")
-    elif args.mode == "position_velocity":
+    elif args.mode == "POS_VEL":
         print(f"  Position: {args.position:.6f} rad")
         print(f"  Velocity: {args.velocity:.6f} rad/s")
-    elif args.mode == "velocity":
+    elif args.mode == "VEL":
         print(f"  Velocity: {args.velocity:.6f} rad/s")
-    elif args.mode == "force_position_hybrid":
+    elif args.mode == "FORCE_POS":
         print(f"  Position: {args.position:.6f} rad")
         print(f"  Velocity Limit: {args.velocity_limit:.6f} rad/s")
         print(f"  Current Limit: {args.current_limit:.6f}")
@@ -916,9 +910,9 @@ def cmd_send_cmd(args) -> None:
         # Determine CAN ID based on mode
         can_id_map = {
             "MIT": args.motor_id,
-            "position_velocity": 0x100 + args.motor_id,
-            "velocity": 0x200 + args.motor_id,
-            "force_position_hybrid": 0x300 + args.motor_id,
+            "POS_VEL": 0x100 + args.motor_id,
+            "VEL": 0x200 + args.motor_id,
+            "FORCE_POS": 0x300 + args.motor_id,
         }
         can_id = can_id_map.get(args.mode, args.motor_id)
         
@@ -941,23 +935,23 @@ def cmd_send_cmd(args) -> None:
                         feedforward_torque=args.feedforward_torque,
                         control_mode="MIT"
                     )
-                elif args.mode == "position_velocity":
+                elif args.mode == "POS_VEL":
                     motor.send_cmd(
                         target_position=args.position,
                         target_velocity=args.velocity,
-                        control_mode="position_velocity"
+                        control_mode="POS_VEL"
                     )
-                elif args.mode == "velocity":
+                elif args.mode == "VEL":
                     motor.send_cmd(
                         target_velocity=args.velocity,
-                        control_mode="velocity"
+                        control_mode="VEL"
                     )
-                elif args.mode == "force_position_hybrid":
+                elif args.mode == "FORCE_POS":
                     motor.send_cmd(
                         target_position=args.position,
                         velocity_limit=args.velocity_limit,
                         current_limit=args.current_limit,
-                        control_mode="force_position_hybrid"
+                        control_mode="FORCE_POS"
                     )
                 
                 controller.poll_feedback()
@@ -1090,7 +1084,7 @@ def unified_main() -> None:
         damiao scan
         
         # Send command in MIT mode
-        damiao send-cmd --id 1 --mode MIT --position 1.5 --velocity 0.0 --stiffness 20.0
+        damiao send-cmd --id 1 --mode MIT --position 1.5 --velocity 0.0 --stiffness 3.0 --stiffness 0.5
         
         # Set current position to zero
         damiao set-zero-position --id 1
@@ -1108,10 +1102,10 @@ Examples:
   damiao scan --ids 1 2 3 --debug
 
   # Send command in MIT mode
-  damiao send-cmd --id 1 --mode MIT --position 1.5 --velocity 0.0 --stiffness 20.0
+  damiao send-cmd --id 1 --mode MIT --position 1.5 --velocity 0.0 --stiffness 3.0 --damping 0.5
 
-  # Send command in velocity mode
-  damiao send-cmd --id 1 --mode velocity --velocity 3.0
+  # Send command in VEL mode
+  damiao send-cmd --id 1 --mode VEL --velocity 3.0
 
   # Set current position to zero
   damiao set-zero-position --id 1
@@ -1370,16 +1364,16 @@ Note: The motor will now respond with feedback using the new feedback ID.
         epilog="""
 Examples:
   # MIT mode (default)
-  damiao send-cmd --id 1 --mode MIT --position 1.5 --velocity 0.0 --stiffness 20.0 --damping 0.5
+  damiao send-cmd --id 1 --mode MIT --position 1.5 --velocity 0.0 --stiffness 3.0 --damping 0.5
 
-  # Position-Velocity mode
-  damiao send-cmd --id 1 --mode position_velocity --position 1.5 --velocity 2.0
+  # POS_VEL mode
+  damiao send-cmd --id 1 --mode POS_VEL --position 1.5 --velocity 2.0
 
-  # Velocity mode
-  damiao send-cmd --id 1 --mode velocity --velocity 3.0
+  # VEL mode
+  damiao send-cmd --id 1 --mode VEL --velocity 3.0
 
-  # Force-Position Hybrid mode
-  damiao send-cmd --id 1 --mode force_position_hybrid --position 1.5 --velocity-limit 50.0 --current-limit 0.8
+  # FORCE_POS mode
+  damiao send-cmd --id 1 --mode FORCE_POS --position 1.5 --velocity-limit 50.0 --current-limit 0.8
 
   # With custom frequency
   damiao send-cmd --id 1 --mode MIT --position 1.5 --frequency 50.0
@@ -1396,20 +1390,20 @@ Examples:
         "--mode",
         type=str,
         default="MIT",
-        choices=["MIT", "position_velocity", "velocity", "force_position_hybrid"],
+        choices=["MIT", "POS_VEL", "VEL", "FORCE_POS"],
         help="Control mode (default: MIT)",
     )
     send_cmd_parser.add_argument(
         "--position",
         type=float,
         default=0.0,
-        help="Desired position (radians). Required for MIT, position_velocity, force_position_hybrid modes.",
+        help="Desired position (radians). Required for MIT, POS_VEL, FORCE_POS modes.",
     )
     send_cmd_parser.add_argument(
         "--velocity",
         type=float,
         default=0.0,
-        help="Desired velocity (rad/s). Required for MIT, position_velocity, velocity modes.",
+        help="Desired velocity (rad/s). Required for MIT, POS_VEL, VEL modes.",
     )
     send_cmd_parser.add_argument(
         "--stiffness",
@@ -1437,14 +1431,14 @@ Examples:
         type=float,
         default=0.0,
         dest="velocity_limit",
-        help="Velocity limit (rad/s, 0-100) for force_position_hybrid mode",
+        help="Velocity limit (rad/s, 0-100) for FORCE_POS mode",
     )
     send_cmd_parser.add_argument(
         "--current-limit",
         type=float,
         default=0.0,
         dest="current_limit",
-        help="Torque current limit normalized (0.0-1.0) for force_position_hybrid mode",
+        help="Torque current limit normalized (0.0-1.0) for FORCE_POS mode",
     )
     send_cmd_parser.add_argument(
         "--frequency",
