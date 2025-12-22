@@ -3,6 +3,7 @@
 CLI tool to scan for connected DaMiao motors and test communication.
 """
 import argparse
+import re
 import subprocess
 import sys
 import time
@@ -18,6 +19,151 @@ RED = "\033[91m"
 YELLOW = "\033[93m"
 GREEN = "\033[92m"
 RESET = "\033[0m"
+
+# Box drawing characters
+BOX_HORIZONTAL = "─"
+BOX_VERTICAL = "│"
+BOX_CORNER_TL = "┌"
+BOX_CORNER_TR = "┐"
+BOX_CORNER_BL = "└"
+BOX_CORNER_BR = "┘"
+BOX_JOIN_LEFT = "├"  # Connects vertical line to horizontal line (right)
+BOX_JOIN_RIGHT = "┤"  # Connects vertical line to horizontal line (left)
+
+
+def strip_ansi_codes(text: str) -> str:
+    """Remove ANSI escape sequences from a string."""
+    ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+    return ansi_escape.sub('', text)
+
+
+def pad_with_ansi(text: str, width: int) -> str:
+    """
+    Pad a string to a specific visible width, accounting for ANSI color codes.
+    
+    Args:
+        text: String that may contain ANSI color codes
+        width: Desired visible width
+        
+    Returns:
+        Padded string with correct visible width
+    """
+    visible_length = len(strip_ansi_codes(text))
+    padding_needed = max(0, width - visible_length)
+    return text + (' ' * padding_needed)
+
+
+def print_boxed(title: str, width: int = 60, color: str = "", border_color: str = "") -> None:
+    """
+    Print a title in a box with borders.
+    
+    Args:
+        title: Title text to display
+        width: Width of the box (default: 60)
+        color: Color code for the title text
+        border_color: Color code for the border
+    """
+    border = border_color if border_color else ""
+    title_color = color if color else ""
+    reset = RESET
+    
+    top_border = f"{border}{BOX_CORNER_TL}{BOX_HORIZONTAL * (width - 2)}{BOX_CORNER_TR}{reset}"
+    title_line = f"{border}{BOX_VERTICAL}{reset} {title_color}{title:<{width-4}}{reset} {border}{BOX_VERTICAL}{reset}"
+    bottom_border = f"{border}{BOX_CORNER_BL}{BOX_HORIZONTAL * (width - 2)}{BOX_CORNER_BR}{reset}"
+    
+    print(top_border)
+    print(title_line)
+    print(bottom_border)
+
+
+def print_section_header(title: str, width: int = 80) -> None:
+    """
+    Print a section header with box top borders (bottom border should be closed separately).
+    
+    Args:
+        title: Section title
+        width: Width of the box (default: 80)
+    """
+    print()
+    print_boxed(title, width=width, color=GREEN)
+
+
+def print_error_box(title: str, lines: list[str], width: int = 60) -> None:
+    """
+    Print an error message in a box.
+    
+    Args:
+        title: Error title
+        lines: List of error message lines
+        width: Width of the box (default: 60)
+    """
+    print()
+    border = RED
+    reset = RESET
+    
+    top_border = f"{border}{BOX_CORNER_TL}{BOX_HORIZONTAL * (width - 2)}{BOX_CORNER_TR}{reset}"
+    print(top_border)
+    
+    title_line = f"{border}{BOX_VERTICAL}{reset} {RED}{title:<{width-4}}{reset} {border}{BOX_VERTICAL}{reset}"
+    print(title_line)
+    
+    for line in lines:
+        line_content = f"{border}{BOX_VERTICAL}{reset} {line:<{width-4}}{reset} {border}{BOX_VERTICAL}{reset}"
+        print(line_content)
+    
+    bottom_border = f"{border}{BOX_CORNER_BL}{BOX_HORIZONTAL * (width - 2)}{BOX_CORNER_BR}{reset}"
+    print(bottom_border)
+
+
+def print_warning_box(title: str, lines: list[str], width: int = 60) -> None:
+    """
+    Print a warning message in a box.
+    
+    Args:
+        title: Warning title
+        lines: List of warning message lines
+        width: Width of the box (default: 60)
+    """
+    print()
+    border = YELLOW
+    reset = RESET
+    
+    top_border = f"{border}{BOX_CORNER_TL}{BOX_HORIZONTAL * (width - 2)}{BOX_CORNER_TR}{reset}"
+    print(top_border)
+    
+    title_line = f"{border}{BOX_VERTICAL}{reset} {YELLOW}{title:<{width-4}}{reset} {border}{BOX_VERTICAL}{reset}"
+    print(title_line)
+    
+    for line in lines:
+        line_content = f"{border}{BOX_VERTICAL}{reset} {line:<{width-4}}{reset} {border}{BOX_VERTICAL}{reset}"
+        print(line_content)
+    
+    bottom_border = f"{border}{BOX_CORNER_BL}{BOX_HORIZONTAL * (width - 2)}{BOX_CORNER_BR}{reset}"
+    print(bottom_border)
+
+
+def print_motor_state(state: Dict[str, Any]) -> None:
+    """
+    Print motor state information in a formatted string.
+    
+    Args:
+        state: Dictionary containing motor state information with keys:
+            - status_code: Motor status code
+            - status: Motor status name
+            - pos: Position in radians
+            - vel: Velocity in rad/s
+            - torq: Torque in Nm
+            - t_mos: MOSFET temperature in °C
+            - t_rotor: Rotor temperature in °C
+    """
+    status_code = state.get("status_code", "N/A")
+    status_name = state.get("status", "UNKNOWN")
+    print(f"State: {status_code} ({status_name}) | "
+          f"Pos:{state.get('pos', 0.0): 8.3f} rad | "
+          f"Vel:{state.get('vel', 0.0): 8.3f} rad/s | "
+          f"Torq:{state.get('torq', 0.0): 8.3f} Nm | "
+          f"T_mos:{state.get('t_mos', 0.0):5.1f}°C | "
+          f"T_rotor:{state.get('t_rotor', 0.0):5.1f}°C")
 
 
 def check_and_bring_up_can_interface(channel: str, bitrate: int = 1000000) -> bool:
@@ -42,15 +188,14 @@ def check_and_bring_up_can_interface(channel: str, bitrate: int = 1000000) -> bo
         
         if result.returncode != 0:
             # Interface does not exist - return False
-            print(f"⚠ Warning: Interface {channel} does not exist.")
+            # Note: Caller should handle printing status within box
             return False
         
         # Check if interface is UP
         if "state UP" in result.stdout or "state UNKNOWN" in result.stdout:
             # Interface exists and is up, but verify it's actually a CAN interface
             if "link/can" not in result.stdout:
-                print(f"⚠ Warning: {channel} is up but not configured as CAN interface. Reconfiguring...")
-                # Reconfigure it
+                # Reconfigure it (caller handles status printing)
                 subprocess.run(
                     ["sudo", "ip", "link", "set", channel, "down"],
                     check=False,
@@ -63,11 +208,9 @@ def check_and_bring_up_can_interface(channel: str, bitrate: int = 1000000) -> bo
                     ["sudo", "ip", "link", "set", channel, "up"],
                     check=True,
                 )
-                print(f"✓ Interface {channel} reconfigured as CAN (bitrate: {bitrate})")
                 time.sleep(0.5)
             return True
         elif "state DOWN" in result.stdout:
-            print(f"Interface {channel} is down. Configuring and bringing it up...")
             # Set it down first (in case it needs reconfiguration)
             subprocess.run(
                 ["sudo", "ip", "link", "set", channel, "down"],
@@ -82,7 +225,6 @@ def check_and_bring_up_can_interface(channel: str, bitrate: int = 1000000) -> bo
                 ["sudo", "ip", "link", "set", channel, "up"],
                 check=True,
             )
-            print(f"✓ Interface {channel} configured and brought up (bitrate: {bitrate})")
             time.sleep(0.5)  # Give it a moment to initialize
             # Verify it's actually up
             verify = subprocess.run(
@@ -94,11 +236,9 @@ def check_and_bring_up_can_interface(channel: str, bitrate: int = 1000000) -> bo
             if verify.returncode == 0 and "state UP" in verify.stdout:
                 return True
             else:
-                print(f"⚠ Warning: {channel} configuration may have failed")
                 return False
         else:
             # Try to bring it up anyway with full configuration
-            print(f"Interface {channel} state unclear. Attempting to configure and bring it up...")
             subprocess.run(
                 ["sudo", "ip", "link", "set", channel, "down"],
                 check=False,
@@ -115,15 +255,13 @@ def check_and_bring_up_can_interface(channel: str, bitrate: int = 1000000) -> bo
             return True
             
     except subprocess.CalledProcessError as e:
-        print(f"⚠ Warning: Could not bring up {channel} automatically: {e}")
-        print(f"  You may need to run manually: sudo ip link set {channel} up type can bitrate {bitrate}")
+        # Caller handles printing
         return False
     except FileNotFoundError:
-        print("⚠ Warning: 'ip' command not found. Cannot automatically bring up CAN interface.")
-        print(f"  Please run manually: sudo ip link set {channel} up type can bitrate {bitrate}")
+        # Caller handles printing
         return False
     except Exception as e:
-        print(f"⚠ Warning: Unexpected error checking CAN interface: {e}")
+        # Caller handles printing
         return False
 
 
@@ -150,11 +288,16 @@ def scan_motors(
     if motor_ids is None:
         motor_ids = list(range(0x01, 0x11))  # Test IDs 1-16
 
+    # Open scan status box (80 chars wide, 78 interior)
+    print(f"{BOX_CORNER_TL}{BOX_HORIZONTAL * 78}{BOX_CORNER_TR}")
+    
     # Check and bring up CAN interface if needed (only for socketcan)
     if bustype == "socketcan":
-        print(f"Checking CAN interface {channel}...")
+        line_text = f" Checking CAN interface {channel}..."
+        print(f"{BOX_VERTICAL}{pad_with_ansi(line_text, 78)}{BOX_VERTICAL}")
         if not check_and_bring_up_can_interface(channel, bitrate=bitrate):
-            print(f"⚠ Warning: Could not verify {channel} is ready. Continuing anyway...")
+            warning_text = f" {YELLOW}⚠ Warning: Could not verify {channel} is ready. Continuing anyway...{RESET}"
+            print(f"{BOX_VERTICAL}{pad_with_ansi(warning_text, 78)}{BOX_VERTICAL}")
         else:
             # Verify interface is actually up and working
             verify_result = subprocess.run(
@@ -164,19 +307,24 @@ def scan_motors(
                 check=False,
             )
             if verify_result.returncode == 0 and "state UP" in verify_result.stdout:
-                print(f"✓ CAN interface {channel} is ready")
+                ready_text = f" {GREEN}✓ CAN interface {channel} is ready{RESET}"
+                print(f"{BOX_VERTICAL}{pad_with_ansi(ready_text, 78)}{BOX_VERTICAL}")
             else:
-                print(f"⚠ Warning: {channel} may not be properly configured")
+                warning_text = f" {YELLOW}⚠ Warning: {channel} may not be properly configured{RESET}"
+                print(f"{BOX_VERTICAL}{pad_with_ansi(warning_text, 78)}{BOX_VERTICAL}")
 
     controller = DaMiaoController(channel=channel, bustype=bustype)
     
     # Flush any pending messages from the bus
-    print("Flushing CAN bus buffer...")
+    line_text = f" Flushing CAN bus buffer..."
+    print(f"{BOX_VERTICAL}{pad_with_ansi(line_text, 78)}{BOX_VERTICAL}")
     flushed_count = controller.flush_bus()
     if flushed_count > 0:
-        print(f"  Flushed {flushed_count} pending message(s) from bus")
+        flushed_text = f"   {GREEN}Flushed {flushed_count} pending message(s) from bus{RESET}"
+        print(f"{BOX_VERTICAL}{pad_with_ansi(flushed_text, 78)}{BOX_VERTICAL}")
     else:
-        print("  Bus buffer is clean")
+        line_text = f"   Bus buffer is clean"
+        print(f"{BOX_VERTICAL}{pad_with_ansi(line_text, 78)}{BOX_VERTICAL}")
     
     motors: dict[int, DaMiaoMotor] = {}
 
@@ -190,7 +338,8 @@ def scan_motors(
             pass
 
     # Send zero command to all motors
-    print(f"Sending zero command (pos=0, vel=0, torq=0, kp=0, kd=0) to {len(motors)} potential motor IDs...")
+    line_text = f" Sending zero command to {len(motors)} potential motor IDs..."
+    print(f"{BOX_VERTICAL}{pad_with_ansi(line_text, 78)}{BOX_VERTICAL}")
     try:
         for motor in motors.values():
             motor.send_cmd(target_position=0.0, target_velocity=0.0, stiffness=0.0, damping=0.0, feedforward_torque=0.0)
@@ -198,21 +347,26 @@ def scan_motors(
                 # Print sent command in debug mode
                 cmd_data = motor.encode_cmd_msg(0.0, 0.0, 0.0, 0.0, 0.0)
                 data_hex = " ".join(f"{b:02X}" for b in cmd_data)
-                print(f"  [SENT] 0x{motor.motor_id:03X} [{data_hex}]")
+                sent_text = f"   [SENT] 0x{motor.motor_id:03X} [{data_hex}]"
+                print(f"{BOX_VERTICAL}{pad_with_ansi(sent_text, 78)}{BOX_VERTICAL}")
     except Exception as e:
         error_str = str(e)
         if "Error Code 80" in error_str or "No buffer space available" in error_str or "[Errno 80]" in error_str:
-            print(f"\n⚠ [ERROR CODE 80] No buffer space available when sending commands")
-            print(f"  Original error: {e}")
-            print(f"\n  This error typically indicates:")
-            print(f"    - No CAN device (motor) is connected to the bus")
-            print(f"    - Motor(s) are not powered on")
-            print(f"    - CAN interface hardware issue")
-            print(f"  Please check:")
-            print(f"    1. Motor(s) are properly connected to the CAN bus")
-            print(f"    2. Motor(s) are powered on")
-            print(f"    3. CAN interface hardware is working correctly")
-            print(f"    4. CAN bus termination resistors (120Ω) are installed at both ends of the bus")
+            error_lines = [
+                "Original error: " + str(e),
+                "",
+                "This error typically indicates:",
+                "  • No CAN device (motor) is connected to the bus",
+                "  • Motor(s) are not powered on",
+                "  • CAN interface hardware issue",
+                "",
+                "Please check:",
+                "  1. Motor(s) are properly connected to the CAN bus",
+                "  2. Motor(s) are powered on",
+                "  3. CAN interface hardware is working correctly",
+                "  4. CAN bus termination resistors (120Ω) are installed at both ends",
+            ]
+            print_error_box("[ERROR CODE 80] No buffer space available when sending commands", error_lines, width=70)
             # Clean up and exit gracefully
             try:
                 controller.bus.shutdown()
@@ -223,7 +377,8 @@ def scan_motors(
             raise
 
     # Listen for feedback
-    print(f"Listening for responses for {duration_s} seconds...")
+    line_text = f" Listening for responses for {duration_s} seconds..."
+    print(f"{BOX_VERTICAL}{pad_with_ansi(line_text, 78)}{BOX_VERTICAL}")
     start_time = time.perf_counter()
     responded_ids: Set[int] = set()
     debug_messages = []  # Collect debug messages if debug mode is enabled
@@ -300,13 +455,15 @@ def scan_motors(
             if motor.state and motor.state.get("can_id") is not None:
                 # Print once per motor when first detected
                 if motor_id not in responded_ids:
-                    state_name = motor.state.get("state_name", "UNKNOWN")
+                    state_name = motor.state.get("status", "UNKNOWN")
                     pos = motor.state.get("pos", 0.0)
                     arb_id = motor.state.get("arbitration_id")
                     if arb_id is not None:
-                        print(f"  ✓ Motor ID 0x{motor_id:02X} responded (arbitration_id: 0x{arb_id:03X}, state: {state_name}, pos: {pos:.3f})")
+                        motor_text = f"   {GREEN}✓ Motor ID 0x{motor_id:02X}{RESET} responded (arb_id: 0x{arb_id:03X}, state: {state_name}, pos: {pos:.3f})"
+                        print(f"{BOX_VERTICAL}{pad_with_ansi(motor_text, 78)}{BOX_VERTICAL}")
                     else:
-                        print(f"  ✓ Motor ID 0x{motor_id:02X} responded (state: {state_name}, pos: {pos:.3f})")
+                        motor_text = f"   {GREEN}✓ Motor ID 0x{motor_id:02X}{RESET} responded (state: {state_name}, pos: {pos:.3f})"
+                        print(f"{BOX_VERTICAL}{pad_with_ansi(motor_text, 78)}{BOX_VERTICAL}")
                 
                 responded_ids.add(motor_id)
 
@@ -314,26 +471,26 @@ def scan_motors(
 
     # Print conflicts (grouped)
     if conflicted_motor_ids:
-        print()
-        print(f"{RED}{'=' * 60}{RESET}")
-        print(f"{RED}[ERROR] Motor ID Conflicts Detected{RESET}")
-        print(f"  Multiple motors responded with the same motor ID.")
-        print(f"  This indicates multiple motors are configured with the same motor ID.")
-        print(f"  Conflicted Motor IDs: {', '.join(f'0x{mid:02X}' for mid in sorted(conflicted_motor_ids))}")
-        print(f"{RED}{'=' * 60}{RESET}")
+        error_lines = [
+            "Multiple motors responded with the same motor ID.",
+            "This indicates multiple motors are configured with the same motor ID.",
+            f"Conflicted Motor IDs: {', '.join(f'0x{mid:02X}' for mid in sorted(conflicted_motor_ids))}"
+        ]
+        print_error_box("[ERROR] Motor ID Conflicts Detected", error_lines)
     
     if conflicted_arbitration_ids:
-        print()
-        print(f"{YELLOW}{'=' * 60}{RESET}")
-        print(f"{YELLOW}[WARNING] Arbitration ID Conflicts Detected{RESET}")
-        print(f"  Same arbitration ID seen multiple times.")
-        print(f"  This may indicate a CAN bus configuration issue.")
-        print(f"  Conflicted Arbitration IDs: {', '.join(f'0x{aid:03X}' for aid in sorted(conflicted_arbitration_ids))}")
-        print(f"{YELLOW}{'=' * 60}{RESET}")
+        warning_lines = [
+            "Same arbitration ID seen multiple times.",
+            "This may indicate a CAN bus configuration issue.",
+            f"Conflicted Arbitration IDs: {', '.join(f'0x{aid:03X}' for aid in sorted(conflicted_arbitration_ids))}"
+        ]
+        print_warning_box("[WARNING] Arbitration ID Conflicts Detected", warning_lines)
 
+    # Close the scan status box
+    print(f"{BOX_CORNER_BL}{BOX_HORIZONTAL * 78}{BOX_CORNER_BR}")
+    
     # Read all registers from detected motors if no motor ID conflicts
     if not conflicted_motor_ids and responded_ids:
-        print()
         print("Reading register parameters from detected motors...")
         for motor_id in sorted(responded_ids):
             motor = motors.get(motor_id)
@@ -342,23 +499,36 @@ def scan_motors(
                     registers = motor.read_all_registers(timeout=0.05)
                     motor_registers[motor_id] = registers
                 except Exception as e:
-                    print(f"  ⚠ Failed to read registers from motor 0x{motor_id:02X}: {e}")
+                    print(f"  {YELLOW}⚠ Failed to read registers from motor 0x{motor_id:02X}: {e}{RESET}")
+        print()
 
     # Print motor register table if no motor ID conflicts
     if not conflicted_motor_ids and motor_registers:
+        # Start register table box
         print()
-        print("=" * 80)
-        print(f"{GREEN}Detected Motors - Register Parameters{RESET}")
-        print("=" * 80)
+        top_border = f"{BOX_CORNER_TL}{BOX_HORIZONTAL * 78}{BOX_CORNER_TR}"
+        print(top_border)
+        # Header line
+        header_text = f" {GREEN}Detected Motors - Register Parameters{RESET}"
+        print(f"{BOX_VERTICAL}{pad_with_ansi(header_text, 78)}{BOX_VERTICAL}")
         
         # Group registers by motor
         for motor_id in sorted(motor_registers.keys()):
             registers = motor_registers[motor_id]
-            print()
-            print(f"{GREEN}Motor ID: 0x{motor_id:02X} ({motor_id}){RESET}")
-            print("-" * 80)
-            print(f"{'RID':<4} {'Variable':<10} {'Description':<35} {'Value':<12} {'Type':<8} {'Access':<2}")
-            print("-" * 80)
+            # Separator line before motor section
+            print(f"{BOX_JOIN_LEFT}{BOX_HORIZONTAL * 78}{BOX_JOIN_RIGHT}")
+            # Motor ID header - use pad_with_ansi to account for color codes
+            motor_id_text = f" {GREEN}Motor ID: 0x{motor_id:02X} ({motor_id}){RESET}"
+            print(f"{BOX_VERTICAL}{pad_with_ansi(motor_id_text, 78)}{BOX_VERTICAL}")
+            # Separator line
+            print(f"{BOX_JOIN_LEFT}{BOX_HORIZONTAL * 78}{BOX_JOIN_RIGHT}")
+            # Table header - adjust column widths to fit within 78 chars
+            # Format: " RID(4) Var(10) Desc(32) Value(12) Type(8) Access(6)" = 78 total
+            # Calculation: 1+4+1+10+1+32+1+12+1+8+1+6 = 78
+            header_content = f" {'RID':<4} {'Variable':<10} {'Description':<32} {'Value':<12} {'Type':<8} {'Access':<6}"
+            print(f"{BOX_VERTICAL}{pad_with_ansi(header_content, 78)}{BOX_VERTICAL}")
+            # Header separator
+            print(f"{BOX_JOIN_LEFT}{BOX_HORIZONTAL * 78}{BOX_JOIN_RIGHT}")
             
             for rid in sorted(registers.keys()):
                 if rid not in REGISTER_TABLE:
@@ -375,26 +545,21 @@ def scan_motors(
                 else:
                     value_str = str(int(value))
                 
-                # Truncate long descriptions
-                desc = reg_info.description[:33] + ".." if len(reg_info.description) > 35 else reg_info.description
+                # Truncate long descriptions to fit (32 chars for desc column)
+                desc = reg_info.description[:30] + ".." if len(reg_info.description) > 32 else reg_info.description
                 
-                print(
-                    f"{rid:<4} "
-                    f"{reg_info.variable:<10} "
-                    f"{desc:<35} "
-                    f"{value_str:<12} "
-                    f"{reg_info.data_type:<8} "
-                    f"{reg_info.access:<2}"
-                )
+                # Format table row - match header column widths
+                row_content = f" {rid:<4} {reg_info.variable:<10} {desc:<32} {value_str:<12} {reg_info.data_type:<8} {reg_info.access:<6}"
+                print(f"{BOX_VERTICAL}{pad_with_ansi(row_content, 78)}{BOX_VERTICAL}")
         
-        print("=" * 80)
+        # Close the box
+        print(f"{BOX_CORNER_BL}{BOX_HORIZONTAL * 78}{BOX_CORNER_BR}")
 
     # Print debug summary if messages were collected
     if debug and debug_messages:
         print()
-        print("=" * 60)
-        print(f"DEBUG: Total {len(debug_messages)} raw CAN messages received")
-        print("=" * 60)
+        print_section_header(f"DEBUG: Total {len(debug_messages)} raw CAN messages received", width=80)
+        print(f"{BOX_CORNER_BL}{BOX_HORIZONTAL * 78}{BOX_CORNER_BR}")
 
     # Cleanup
     try:
@@ -495,19 +660,29 @@ def cmd_scan(args) -> None:
         damiao scan --debug
         ```
     """
-    print("=" * 60)
-    print("DaMiao Motor Scanner")
-    print("=" * 60)
-    print(f"CAN channel: {args.channel}")
-    print(f"Bus type: {args.bustype}")
-    if args.ids:
-        print(f"Testing motor IDs: {[hex(i) for i in args.ids]}")
-    else:
-        print("Testing motor IDs: 0x01-0x10 (default range)")
-    print(f"Listen duration: {args.duration}s")
+    # Print header and configuration in a single box
+    print()
+    top_border = f"{BOX_CORNER_TL}{BOX_HORIZONTAL * 78}{BOX_CORNER_TR}"
+    print(top_border)
+    # Header line
+    header_text = f" {GREEN}DaMiao Motor Scanner{RESET}"
+    print(f"{BOX_VERTICAL}{pad_with_ansi(header_text, 78)}{BOX_VERTICAL}")
+    # Separator line
+    print(f"{BOX_JOIN_LEFT}{BOX_HORIZONTAL * 78}{BOX_JOIN_RIGHT}")
+    # Configuration lines
+    config_lines = [
+        f" CAN channel: {args.channel}",
+        f" Bus type: {args.bustype}",
+        f" Testing motor IDs: {', '.join([hex(i) for i in args.ids]) if args.ids else '0x01-0x10 (default range)'}",
+        f" Listen duration: {args.duration}s",
+    ]
     if args.debug:
-        print("Debug mode: ENABLED (printing all raw CAN messages)")
-    print("=" * 60)
+        config_lines.append(" Debug mode: ENABLED (printing all raw CAN messages)")
+    
+    for line in config_lines:
+        print(f"{BOX_VERTICAL}{pad_with_ansi(line, 78)}{BOX_VERTICAL}")
+    bottom_border = f"{BOX_CORNER_BL}{BOX_HORIZONTAL * 78}{BOX_CORNER_BR}"
+    print(bottom_border)
     print()
 
     try:
@@ -520,19 +695,37 @@ def cmd_scan(args) -> None:
             debug=args.debug,
         )
 
+        # Print final summary
         print()
-        print("=" * 60)
         if responded:
-            print(f"Found {len(responded)} motor(s):")
+            # Combined scan summary box
+            top_border = f"{BOX_CORNER_TL}{BOX_HORIZONTAL * 78}{BOX_CORNER_TR}"
+            print(top_border)
+            # Header line
+            header_text = f" {GREEN}Scan Summary{RESET}"
+            print(f"{BOX_VERTICAL}{pad_with_ansi(header_text, 78)}{BOX_VERTICAL}")
+            # Separator line
+            print(f"{BOX_JOIN_LEFT}{BOX_HORIZONTAL * 78}{BOX_JOIN_RIGHT}")
+            # Summary lines
+            summary_lines = [
+                f" Found {len(responded)} motor(s):"
+            ]
             for motor_id in sorted(responded):
-                print(f"  • Motor ID: 0x{motor_id:02X} ({motor_id})")
+                summary_lines.append(f"   • Motor ID: 0x{motor_id:02X} ({motor_id})")
+            for line in summary_lines:
+                print(f"{BOX_VERTICAL}{pad_with_ansi(line, 78)}{BOX_VERTICAL}")
+            bottom_border = f"{BOX_CORNER_BL}{BOX_HORIZONTAL * 78}{BOX_CORNER_BR}"
+            print(bottom_border)
         else:
-            print("No motors responded.")
-            print("Check:")
-            print("  - CAN interface is up (e.g., sudo ip link set can0 up type can bitrate 1000000)")
-            print("  - Motors are powered and connected")
-            print("  - Motor IDs match the tested range")
-        print("=" * 60)
+            summary_lines = [
+                "No motors responded.",
+                "",
+                "Check:",
+                "  • CAN interface is up (e.g., sudo ip link set can0 up type can bitrate 1000000)",
+                "  • Motors are powered and connected",
+                "  • Motor IDs match the tested range",
+            ]
+            print_warning_box("Scan Summary - No Motors Found", summary_lines, width=80)
 
     except KeyboardInterrupt:
         print("\n\nInterrupted by user.")
@@ -545,7 +738,7 @@ def cmd_set_zero(args) -> None:
     """
     Handle 'set-zero-command' subcommand.
     
-    Sends a zero command (pos=0, vel=0, torq=0, kp=0, kd=0) to a motor continuously.
+    Sends a zero command to a motor continuously.
     Loops until interrupted with Ctrl+C.
     
     Args:
@@ -603,15 +796,7 @@ def cmd_set_zero(args) -> None:
                 controller.poll_feedback()
                 
                 if motor.state:
-                    state = motor.state
-                    status_code = state.get("status_code", "N/A")
-                    status_name = state.get("status", "UNKNOWN")
-                    print(f"State: {status_code} ({status_name}) | "
-                          f"Pos:{state.get('pos', 0.0): 8.3f} rad | "
-                          f"Vel:{state.get('vel', 0.0): 8.3f} rad/s | "
-                          f"Torq:{state.get('torq', 0.0): 8.3f} Nm | "
-                          f"T_mos:{state.get('t_mos', 0.0):5.1f}°C | "
-                          f"T_rotor:{state.get('t_rotor', 0.0):5.1f}°C")
+                    print_motor_state(motor.state)
                 
                 time.sleep(interval)
         except KeyboardInterrupt:
@@ -957,15 +1142,7 @@ def cmd_send_cmd(args) -> None:
                 controller.poll_feedback()
                 
                 if motor.state:
-                    state = motor.state
-                    status_code = state.get("status_code", "N/A")
-                    status_name = state.get("status", "UNKNOWN")
-                    print(f"State: {status_code} ({status_name}) | "
-                          f"Pos:{state.get('pos', 0.0): 8.3f} rad | "
-                          f"Vel:{state.get('vel', 0.0): 8.3f} rad/s | "
-                          f"Torq:{state.get('torq', 0.0): 8.3f} Nm | "
-                          f"T_mos:{state.get('t_mos', 0.0):5.1f}°C | "
-                          f"T_rotor:{state.get('t_rotor', 0.0):5.1f}°C")
+                    print_motor_state(motor.state)
                 
                 time.sleep(interval)
         except KeyboardInterrupt:
@@ -1218,7 +1395,7 @@ Examples:
     # set-zero-command (renamed from set-zero)
     zero_parser = subparsers.add_parser(
         "set-zero-command",
-        help="Send zero command to a motor (pos=0, vel=0, torq=0, kp=0, kd=0)",
+        help="Send zero command to a motor",
         description="Send a zero command continuously to a motor.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
