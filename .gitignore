@@ -13,6 +13,7 @@ build/
 dist/
 *.egg-info/
 *.egg
+damiao_motor/_version.py
 
 # IDE / editor
 .vscode/

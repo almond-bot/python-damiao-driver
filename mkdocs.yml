@@ -67,9 +67,8 @@ nav:
   - Home: index.md
   - Guide:
     - Hardware Setup: guide/hardware-setup.md
-    - Motor Communication: guide/motor-communication.md
-  - CLI Reference: cli-reference/index.md
-  - Web GUI: web-gui.md
+    - CLI Tool: guide/cli-tool.md
+    - Web GUI: guide/web-gui.md
   - API Reference:
     - DaMiaoController: api/controller.md
     - DaMiaoMotor: api/motor.md

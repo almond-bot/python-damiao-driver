@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=61", "setuptools_scm>=8.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "damiao-motor"
-version = "1.0.1"
+dynamic = ["version"]
 description = "Python driver for DaMiao motors over CAN (MIT-style control, multi-motor support)."
 readme = "README.md"
 requires-python = ">=3.8"
@@ -24,6 +24,9 @@ Repository = "https://github.com/jia-xie/python-damiao-driver"
 
 [tool.setuptools]
 packages = ["damiao_motor"]
+
+[tool.setuptools_scm]
+write_to = "damiao_motor/_version.py"
 
 [tool.setuptools.package-data]
 damiao_motor = ["templates/*.html"]

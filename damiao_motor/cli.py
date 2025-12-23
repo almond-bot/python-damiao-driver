@@ -11,6 +11,7 @@ from typing import Any, Dict, Set
 
 import can
 
+from . import __version__
 from .controller import DaMiaoController
 from .motor import DaMiaoMotor, REGISTER_TABLE
 
@@ -1251,6 +1252,7 @@ def unified_main() -> None:
         - set-feedback-id: Change motor feedback ID
     
     Global options (available for all commands):
+        - --version: Show version number and exit
         - --channel: CAN channel (default: can0)
         - --bustype: CAN bus type (default: socketcan)
         - --bitrate: CAN bitrate in bits per second (default: 1000000)
@@ -1294,12 +1296,21 @@ Examples:
   damiao scan --channel can_leader_l
   damiao send-cmd --id 1 --mode MIT --channel can_leader_l
 
+  # Show version
+  damiao --version
+
 For more information about a specific command, use:
   damiao <command> --help
         """,
     )
     
     # Global arguments
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"{__version__}",
+        help="Show version number",
+    )
     parser.add_argument(
         "--channel",
         type=str,
