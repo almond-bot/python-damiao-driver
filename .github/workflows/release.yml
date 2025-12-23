@@ -5,12 +5,17 @@ on:
     tags:
       - "v*.*.*"
 
+permissions:
+  contents: write
+
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history for release notes
 
       - uses: actions/setup-python@v5
         with:
@@ -27,3 +32,60 @@ jobs:
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+
+      - name: Extract version from tag
+        id: tag_version
+        run: |
+          TAG_NAME=${GITHUB_REF#refs/tags/}
+          VERSION=${TAG_NAME#v}  # Remove 'v' prefix if present
+          echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Generate release notes
+        id: release_notes
+        run: |
+          # Fetch all tags to find previous release
+          git fetch --tags
+          
+          # Find previous tag (second most recent version tag)
+          PREVIOUS_TAG=$(git tag --sort=-version:refname | grep -E "^v[0-9]+\.[0-9]+\.[0-9]+$" | sed -n '2p' || echo "")
+          
+          if [ -z "$PREVIOUS_TAG" ]; then
+            # First release, get all commits up to this tag
+            COMMITS=$(git log --pretty=format:"- %s (%h)" ${{ steps.tag_version.outputs.tag_name }} 2>/dev/null || echo "- Initial release")
+            COMPARE_URL="https://github.com/${{ github.repository }}/releases/tag/${{ steps.tag_version.outputs.tag_name }}"
+          else
+            # Get commits since previous tag
+            COMMITS=$(git log --pretty=format:"- %s (%h)" ${PREVIOUS_TAG}..${{ steps.tag_version.outputs.tag_name }})
+            COMPARE_URL="https://github.com/${{ github.repository }}/compare/${PREVIOUS_TAG}...${{ steps.tag_version.outputs.tag_name }}"
+          fi
+          
+          # Create release notes file
+          {
+            echo "## Release ${{ steps.tag_version.outputs.version }}"
+            echo ""
+            echo "### Installation"
+            echo "\`\`\`bash"
+            echo "pip install damiao-motor==${{ steps.tag_version.outputs.version }}"
+            echo "\`\`\`"
+            echo ""
+            echo "### Changes"
+            echo "$COMMITS"
+            echo ""
+            echo "### Full Changelog"
+            echo "See the [full changelog]($COMPARE_URL) for details."
+          } > release_notes.md
+          
+          # Also output to step summary for visibility
+          cat release_notes.md >> $GITHUB_STEP_SUMMARY
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.tag_version.outputs.tag_name }}
+          name: Release ${{ steps.tag_version.outputs.version }}
+          body_path: release_notes.md
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
