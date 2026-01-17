@@ -1,3 +1,4 @@
+from ast import NameConstant
 import can
 import struct
 import time
@@ -104,6 +105,11 @@ CAN_BAUD_RATE_CODES = {
     2: 250000,   # 250K
     3: 500000,   # 500K
     4: 1000000,  # 1M
+    5: 2000000,  # 2M
+    6: 2500000,  # 2.5M
+    7: 3200000,  # 3.2M
+    8: 4000000,  # 4M
+    9: 5000000,  # 5M
 }
 
 # -----------------------
@@ -145,11 +151,8 @@ def is_register_reply(data: bytes) -> bool:
 # -----------------------
 # Motor parameter limits
 # -----------------------
-P_MIN, P_MAX = -12.5, 12.5
-V_MIN, V_MAX = -45.0, 45.0
 KP_MIN, KP_MAX = 0.0, 500.0
 KD_MIN, KD_MAX = 0.0, 5.0
-T_MIN, T_MAX = -18.0, 18.0
 
 # -----------------------
 # Motor state codes
@@ -215,6 +218,20 @@ class DaMiaoMotor:
         self.register_reply_time: Dict[int, float] = {}
         self.register_reply_time_lock = threading.Lock()
 
+        # mapping ranges
+        self.request_register_reading(21)
+        self.request_register_reading(22)
+        self.request_register_reading(23)
+
+        time.sleep(0.05)
+
+        self.P_MAX = self.get_register(21)
+        self.P_MIN = -self.P_MAX
+        self.V_MAX = self.get_register(22)
+        self.V_MIN = -self.V_MAX
+        self.T_MAX = self.get_register(23)
+        self.T_MIN = -self.T_MAX
+
     def get_states(self) -> Dict[str, Any]:
         """
         Get the current motor state dictionary.
@@ -241,11 +258,11 @@ class DaMiaoMotor:
         Encode a command to CAN frame for sending to the motor.
         Check 
         """
-        pos_u = float_to_uint(pos, P_MIN, P_MAX, 16)
-        vel_u = float_to_uint(vel, V_MIN, V_MAX, 12)
+        pos_u = float_to_uint(pos, self.P_MIN, self.P_MAX, 16)
+        vel_u = float_to_uint(vel, self.V_MIN, self.V_MAX, 12)
         kp_u = float_to_uint(kp, KP_MIN, KP_MAX, 12)
         kd_u = float_to_uint(kd, KD_MIN, KD_MAX, 12)
-        torq_u = float_to_uint(torq, T_MIN, T_MAX, 12)
+        torq_u = float_to_uint(torq, self.T_MIN, self.T_MAX, 12)
 
         data = [
             (pos_u >> 8) & 0xFF,
@@ -478,9 +495,9 @@ class DaMiaoMotor:
             "arbitration_id": arbitration_id,
             "status": decode_state_name(status),
             "status_code": status,
-            "pos": uint_to_float(pos_int, P_MIN, P_MAX, 16),
-            "vel": uint_to_float(vel_int, V_MIN, V_MAX, 12),
-            "torq": uint_to_float(torq_int, T_MIN, T_MAX, 12),
+            "pos": uint_to_float(pos_int, self.P_MIN, self.P_MAX, 16),
+            "vel": uint_to_float(vel_int, self.V_MIN, self.V_MAX, 12),
+            "torq": uint_to_float(torq_int, self.T_MIN, self.T_MAX, 12),
             "t_mos": t_mos,
             "t_rotor": t_rotor,
         }
