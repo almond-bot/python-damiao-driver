@@ -1,4 +1,3 @@
-from ast import NameConstant
 import can
 import struct
 import time
@@ -218,6 +217,14 @@ class DaMiaoMotor:
         self.register_reply_time: Dict[int, float] = {}
         self.register_reply_time_lock = threading.Lock()
 
+        # mapping ranges
+        self.P_MAX = 12.5
+        self.P_MIN = -12.5
+        self.V_MAX = 45.0
+        self.V_MIN = -45.0
+        self.T_MAX = 18.0
+        self.T_MIN = -18.0
+
     def get_states(self) -> Dict[str, Any]:
         """
         Get the current motor state dictionary.
@@ -332,6 +339,15 @@ class DaMiaoMotor:
             raise RuntimeError(f"Unexpected error sending CAN message to arbitration_id 0x{arbitration_id:03X}: {e}") from e
 
     def enable(self) -> None:
+        self.read_all_registers()
+
+        self.P_MAX = self.get_register(21)
+        self.P_MIN = -self.P_MAX
+        self.V_MAX = self.get_register(22)
+        self.V_MIN = -self.V_MAX
+        self.T_MAX = self.get_register(23)
+        self.T_MIN = -self.T_MAX
+
         self.send_raw(self.encode_enable_msg())
 
     def disable(self) -> None:
